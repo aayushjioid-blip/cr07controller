@@ -462,7 +462,7 @@ class MainActivity : AppCompatActivity() {
             // Automatically detect phone name and brand for Windows discovery
             val sdpSettings = BluetoothHidDeviceAppSdpSettings(
                 "Cricket 07 Controller",
-                "${DeviceCompatibility.displayName} Controller v2.2",
+                "${DeviceCompatibility.displayName} Controller ${DeviceCompatibility.APP_VERSION}",
                 DeviceCompatibility.manufacturer,
                 BluetoothHidDevice.SUBCLASS2_GAMEPAD,
                 HidDescriptor.COMPOSITE_DESCRIPTOR
@@ -556,18 +556,18 @@ class MainActivity : AppCompatActivity() {
 
         try {
             // Exactly matches HidDescriptor.COMPOSITE_DESCRIPTOR Gamepad Collection:
-            // Byte 0: X-Axis (0-255, neutral 128)
-            // Byte 1: Y-Axis (0-255, neutral 128)
-            // Byte 2: Z-Axis (0-255, neutral 128)
-            // Byte 3: Rz-Axis (0-255, neutral 128)
+            // Byte 0: X-Axis (Left stick: 0-255, neutral 128)
+            // Byte 1: Y-Axis (Left stick: 0-255, neutral 128)
+            // Byte 2: Z-Axis (Right stick / Century Stick Horizontal: mirrors leftStickX)
+            // Byte 3: Rz-Axis (Right stick / Century Stick Vertical: mirrors leftStickY)
             // Byte 4: Hat Switch (lower 4 bits: 0-7 directions, 8 = released/centered)
             // Byte 5: Buttons 1-8 bitmask
             // Byte 6: Buttons 9-16 bitmask
             val report = ByteArray(7)
             report[0] = leftStickX
             report[1] = leftStickY
-            report[2] = 128.toByte() // Right stick Z neutral
-            report[3] = 128.toByte() // Right stick Rz neutral
+            report[2] = leftStickX // Mirror to Century Stick Z for direct shot picking
+            report[3] = leftStickY // Mirror to Century Stick Rz for direct shot picking
             report[4] = (hatSwitch.toInt() and 0x0F).toByte()
             report[5] = (buttonsMask.toInt() and 0xFF).toByte()
             report[6] = ((buttonsMask.toInt() shr 8) and 0xFF).toByte()

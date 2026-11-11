@@ -570,8 +570,10 @@ class ControllerCanvasView @JvmOverloads constructor(
 
         var buttonsMask: Int = 0
         for (btn in activePointerMap.values) {
-            if (btn.gamepadButtonIndex in 1..16) {
-                buttonsMask = buttonsMask or (1 shl (btn.gamepadButtonIndex - 1))
+            for (btnIdx in btn.allGamepadButtonIndices) {
+                if (btnIdx in 1..16) {
+                    buttonsMask = buttonsMask or (1 shl (btnIdx - 1))
+                }
             }
         }
         onGamepadStateChanged?.invoke(stickX, stickY, activeHatSwitch, buttonsMask.toShort())

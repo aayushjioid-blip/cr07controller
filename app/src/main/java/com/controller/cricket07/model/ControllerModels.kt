@@ -13,9 +13,20 @@ data class ControllerButton(
     val isModifier: Boolean = false,
     val modifierMask: Byte = 0,
     val gamepadButtonIndex: Int = 0, // 1 to 16 for Gamepad DirectInput
+    val extraGamepadButtons: List<Int> = emptyList(),
     val defaultXPercent: Float = xPercent,
     val defaultYPercent: Float = yPercent
-)
+) {
+    val allGamepadButtonIndices: List<Int>
+        get() {
+            val list = mutableListOf<Int>()
+            if (gamepadButtonIndex in 1..16) list.add(gamepadButtonIndex)
+            for (idx in extraGamepadButtons) {
+                if (idx in 1..16 && !list.contains(idx)) list.add(idx)
+            }
+            return list
+        }
+}
 
 data class ControllerPreset(
     val id: String,
@@ -55,22 +66,22 @@ object PresetRepository {
         joystickLabel = "SHOT",
         buttons = mutableListOf(
             // Left Side Controls
-            ControllerButton("ctrl", "Ctrl", "Block", 0.06f, 0.14f, 28f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_CTRL, gamepadButtonIndex = 5),
-            ControllerButton("space", "Space", "Cancel", 0.06f, 0.30f, 28f, HidConsts.KEY_SPACE, gamepadButtonIndex = 7),
+            ControllerButton("ctrl", "Ctrl", "Block", 0.06f, 0.14f, 28f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_CTRL, gamepadButtonIndex = 7),
+            ControllerButton("space", "Space", "Cancel", 0.06f, 0.30f, 28f, hidKeyCode = HidConsts.KEY_SPACE, gamepadButtonIndex = 1),
 
             // Center Menu Buttons (Shifted DOWN to y=0.22f to avoid overlapping top status text)
-            ControllerButton("esc", "Esc", "Pause", 0.44f, 0.22f, 24f, HidConsts.KEY_ESCAPE, gamepadButtonIndex = 9),
-            ControllerButton("enter", "Enter", "OK", 0.56f, 0.22f, 24f, HidConsts.KEY_ENTER, gamepadButtonIndex = 10),
+            ControllerButton("esc", "Esc", "Pause", 0.44f, 0.22f, 24f, hidKeyCode = HidConsts.KEY_ESCAPE, gamepadButtonIndex = 9),
+            ControllerButton("enter", "Enter", "OK", 0.56f, 0.22f, 24f, hidKeyCode = HidConsts.KEY_ENTER, gamepadButtonIndex = 10),
 
-            // Right Side Triggers / Modifiers
-            ControllerButton("shift", "Shift", "Sprint", 0.88f, 0.14f, 36f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT, gamepadButtonIndex = 6),
-            ControllerButton("alt", "Alt", "Loft", 0.88f, 0.32f, 28f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_ALT, gamepadButtonIndex = 3),
+            // Right Side Triggers / Modifiers (Shift = Lofted 6s: triggers Button 6 and Button 5 fallback)
+            ControllerButton("shift", "Shift", "Loft (Six)", 0.88f, 0.14f, 36f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT, gamepadButtonIndex = 6, extraGamepadButtons = listOf(5)),
+            ControllerButton("alt", "Alt", "Advance", 0.88f, 0.32f, 28f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_ALT, gamepadButtonIndex = 5),
 
-            // Right Thumb Action Diamond (W, A, S, D)
-            ControllerButton("btn_w", "W", "Front", 0.83f, 0.58f, 30f, HidConsts.KEY_W, gamepadButtonIndex = 1),
-            ControllerButton("btn_a", "A", "Advance", 0.73f, 0.72f, 30f, HidConsts.KEY_A, gamepadButtonIndex = 4),
-            ControllerButton("btn_d", "D", "Defend", 0.93f, 0.72f, 30f, HidConsts.KEY_D, gamepadButtonIndex = 8),
-            ControllerButton("btn_s", "S", "Back", 0.83f, 0.86f, 30f, HidConsts.KEY_S, gamepadButtonIndex = 2)
+            // Right Thumb Action Diamond (W, A, S, D - 100% EA Sports Cricket 07 DirectInput & Keyboard parity)
+            ControllerButton("btn_w", "W", "Back / Dive", 0.83f, 0.58f, 30f, hidKeyCode = HidConsts.KEY_W, gamepadButtonIndex = 4),
+            ControllerButton("btn_a", "A", "Cancel", 0.73f, 0.72f, 30f, hidKeyCode = HidConsts.KEY_A, gamepadButtonIndex = 1),
+            ControllerButton("btn_d", "D", "Run", 0.93f, 0.72f, 30f, hidKeyCode = HidConsts.KEY_D, gamepadButtonIndex = 3, extraGamepadButtons = listOf(8)),
+            ControllerButton("btn_s", "S", "Front / Shot", 0.83f, 0.86f, 30f, hidKeyCode = HidConsts.KEY_S, gamepadButtonIndex = 2)
         )
     )
 
