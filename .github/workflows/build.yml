@@ -19,16 +19,15 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build Debug and Pre-signed Release APK
+      - name: Build Debug and Release APK
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
         run: |
-          chmod +x gradlew || true
-          gradle assembleDebug assembleRelease
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          gradle assembleDebug assembleRelease --stacktrace
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
