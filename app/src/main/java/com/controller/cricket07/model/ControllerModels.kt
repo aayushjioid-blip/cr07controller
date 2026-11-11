@@ -12,6 +12,7 @@ data class ControllerButton(
     val hidKeyCode: Byte = 0,
     val isModifier: Boolean = false,
     val modifierMask: Byte = 0,
+    val gamepadButtonIndex: Int = 0, // 1 to 16 for Gamepad DirectInput
     val defaultXPercent: Float = xPercent,
     val defaultYPercent: Float = yPercent
 )
@@ -37,11 +38,12 @@ object PresetRepository {
 
     /**
      * 1. Cricket 07 Day Out Preset
-     * Optimized for EA Sports Cricket 07 batting shots & bowling directions
+     * Fully optimized for EA Sports Cricket 07.
+     * Esc and Enter are shifted down to y = 0.22f to sit safely below any top status HUD.
      */
     fun createCricket07Preset() = ControllerPreset(
         id = "cricket_07_day_out",
-        name = "Cricket 07 Day Out",
+        name = "Cricket 07 Controller",
         description = "Analog Dial + W, A, S, D, Shift, Alt, Ctrl, Space",
         hasAnalogStick = true,
         joystickXPercent = 0.12f,
@@ -52,16 +54,23 @@ object PresetRepository {
         joystickKeyRight = HidConsts.KEY_RIGHT_ARROW,
         joystickLabel = "SHOT",
         buttons = mutableListOf(
-            ControllerButton("ctrl", "Ctrl", "Block", 0.06f, 0.14f, 28f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_CTRL),
-            ControllerButton("space", "Space", "Cancel", 0.06f, 0.30f, 28f, HidConsts.KEY_SPACE),
-            ControllerButton("esc", "Esc", "Pause", 0.46f, 0.08f, 22f, HidConsts.KEY_ESCAPE),
-            ControllerButton("enter", "Enter", "OK", 0.54f, 0.08f, 22f, HidConsts.KEY_ENTER),
-            ControllerButton("shift", "Shift", "Sprint", 0.88f, 0.14f, 36f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT),
-            ControllerButton("alt", "Alt", "Loft", 0.88f, 0.32f, 28f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_ALT),
-            ControllerButton("btn_w", "W", "Front", 0.83f, 0.58f, 30f, HidConsts.KEY_W),
-            ControllerButton("btn_a", "A", "Advance", 0.73f, 0.72f, 30f, HidConsts.KEY_A),
-            ControllerButton("btn_d", "D", "Defend", 0.93f, 0.72f, 30f, HidConsts.KEY_D),
-            ControllerButton("btn_s", "S", "Back", 0.83f, 0.86f, 30f, HidConsts.KEY_S)
+            // Left Side Controls
+            ControllerButton("ctrl", "Ctrl", "Block", 0.06f, 0.14f, 28f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_CTRL, gamepadButtonIndex = 5),
+            ControllerButton("space", "Space", "Cancel", 0.06f, 0.30f, 28f, HidConsts.KEY_SPACE, gamepadButtonIndex = 7),
+
+            // Center Menu Buttons (Shifted DOWN to y=0.22f to avoid overlapping top status text)
+            ControllerButton("esc", "Esc", "Pause", 0.44f, 0.22f, 24f, HidConsts.KEY_ESCAPE, gamepadButtonIndex = 9),
+            ControllerButton("enter", "Enter", "OK", 0.56f, 0.22f, 24f, HidConsts.KEY_ENTER, gamepadButtonIndex = 10),
+
+            // Right Side Triggers / Modifiers
+            ControllerButton("shift", "Shift", "Sprint", 0.88f, 0.14f, 36f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT, gamepadButtonIndex = 6),
+            ControllerButton("alt", "Alt", "Loft", 0.88f, 0.32f, 28f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_ALT, gamepadButtonIndex = 3),
+
+            // Right Thumb Action Diamond (W, A, S, D)
+            ControllerButton("btn_w", "W", "Front", 0.83f, 0.58f, 30f, HidConsts.KEY_W, gamepadButtonIndex = 1),
+            ControllerButton("btn_a", "A", "Advance", 0.73f, 0.72f, 30f, HidConsts.KEY_A, gamepadButtonIndex = 4),
+            ControllerButton("btn_d", "D", "Defend", 0.93f, 0.72f, 30f, HidConsts.KEY_D, gamepadButtonIndex = 8),
+            ControllerButton("btn_s", "S", "Back", 0.83f, 0.86f, 30f, HidConsts.KEY_S, gamepadButtonIndex = 2)
         )
     )
 
@@ -82,26 +91,25 @@ object PresetRepository {
         joystickLabel = "D-PAD",
         buttons = mutableListOf(
             // Top Bumpers & Triggers
-            ControllerButton("btn_lt", "LT", "", 0.08f, 0.14f, 26f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT),
-            ControllerButton("btn_lb", "LB", "", 0.22f, 0.14f, 26f, HidConsts.KEY_Q),
-            ControllerButton("btn_rb", "RB", "", 0.78f, 0.14f, 26f, HidConsts.KEY_E),
-            ControllerButton("btn_rt", "RT", "", 0.92f, 0.14f, 26f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_CTRL),
+            ControllerButton("btn_lt", "LT", "", 0.08f, 0.14f, 26f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT, gamepadButtonIndex = 7),
+            ControllerButton("btn_lb", "LB", "", 0.22f, 0.14f, 26f, HidConsts.KEY_Q, gamepadButtonIndex = 5),
+            ControllerButton("btn_rb", "RB", "", 0.78f, 0.14f, 26f, HidConsts.KEY_E, gamepadButtonIndex = 6),
+            ControllerButton("btn_rt", "RT", "", 0.92f, 0.14f, 26f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_CTRL, gamepadButtonIndex = 8),
 
-            // Start & Select
-            ControllerButton("btn_select", "SELECT", "", 0.44f, 0.08f, 22f, HidConsts.KEY_TAB),
-            ControllerButton("btn_start", "START", "", 0.56f, 0.08f, 22f, HidConsts.KEY_ESCAPE),
+            // Center Menu Buttons (Shifted down to y=0.22f)
+            ControllerButton("btn_select", "SELECT", "", 0.44f, 0.22f, 24f, HidConsts.KEY_TAB, gamepadButtonIndex = 9),
+            ControllerButton("btn_start", "START", "", 0.56f, 0.22f, 24f, HidConsts.KEY_ESCAPE, gamepadButtonIndex = 10),
 
             // Action Diamond (A, B, X, Y)
-            ControllerButton("btn_y", "Y", "", 0.84f, 0.52f, 32f, HidConsts.KEY_Y),
-            ControllerButton("btn_x", "X", "", 0.74f, 0.68f, 32f, HidConsts.KEY_X),
-            ControllerButton("btn_b", "B", "", 0.94f, 0.68f, 32f, HidConsts.KEY_B),
-            ControllerButton("btn_a_pad", "A", "", 0.84f, 0.84f, 32f, HidConsts.KEY_SPACE)
+            ControllerButton("btn_y", "Y", "", 0.84f, 0.52f, 32f, HidConsts.KEY_Y, gamepadButtonIndex = 4),
+            ControllerButton("btn_x", "X", "", 0.74f, 0.68f, 32f, HidConsts.KEY_X, gamepadButtonIndex = 3),
+            ControllerButton("btn_b", "B", "", 0.94f, 0.68f, 32f, HidConsts.KEY_B, gamepadButtonIndex = 2),
+            ControllerButton("btn_a_pad", "A", "", 0.84f, 0.84f, 32f, HidConsts.KEY_SPACE, gamepadButtonIndex = 1)
         )
     )
 
     /**
      * 3. WASD Action Controller (FPS / Adventure PC Games)
-     * Joystick sends W, A, S, D directly!
      */
     fun createFpsWasdPreset() = ControllerPreset(
         id = "fps_wasd",
@@ -116,13 +124,13 @@ object PresetRepository {
         joystickKeyRight = HidConsts.KEY_D,
         joystickLabel = "WASD",
         buttons = mutableListOf(
-            ControllerButton("w_shift", "SPRINT", "", 0.08f, 0.16f, 30f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT),
-            ControllerButton("w_ctrl", "CROUCH", "", 0.22f, 0.16f, 30f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_CTRL),
-            ControllerButton("w_esc", "ESC", "", 0.50f, 0.08f, 22f, HidConsts.KEY_ESCAPE),
-            ControllerButton("w_r", "R (Reload)", "", 0.74f, 0.46f, 28f, HidConsts.KEY_R),
-            ControllerButton("w_e", "E (Use)", "", 0.88f, 0.46f, 28f, HidConsts.KEY_E),
-            ControllerButton("w_space", "JUMP (Space)", "", 0.80f, 0.72f, 38f, HidConsts.KEY_SPACE),
-            ControllerButton("w_f", "F (Action)", "", 0.93f, 0.72f, 28f, HidConsts.KEY_F)
+            ControllerButton("w_shift", "SPRINT", "", 0.08f, 0.16f, 30f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT, gamepadButtonIndex = 6),
+            ControllerButton("w_ctrl", "CROUCH", "", 0.22f, 0.16f, 30f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_CTRL, gamepadButtonIndex = 5),
+            ControllerButton("w_esc", "ESC", "", 0.50f, 0.22f, 24f, HidConsts.KEY_ESCAPE, gamepadButtonIndex = 9),
+            ControllerButton("w_r", "R (Reload)", "", 0.74f, 0.46f, 28f, HidConsts.KEY_R, gamepadButtonIndex = 3),
+            ControllerButton("w_e", "E (Use)", "", 0.88f, 0.46f, 28f, HidConsts.KEY_E, gamepadButtonIndex = 4),
+            ControllerButton("w_space", "JUMP (Space)", "", 0.80f, 0.72f, 38f, HidConsts.KEY_SPACE, gamepadButtonIndex = 1),
+            ControllerButton("w_f", "F (Action)", "", 0.93f, 0.72f, 28f, HidConsts.KEY_F, gamepadButtonIndex = 2)
         )
     )
 
@@ -142,12 +150,12 @@ object PresetRepository {
         joystickKeyRight = HidConsts.KEY_RIGHT_ARROW,
         joystickLabel = "STEER",
         buttons = mutableListOf(
-            ControllerButton("nitro", "NITRO", "", 0.10f, 0.16f, 30f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT),
-            ControllerButton("camera", "CAM", "", 0.24f, 0.16f, 26f, HidConsts.KEY_C),
-            ControllerButton("pause", "PAUSE", "", 0.50f, 0.08f, 22f, HidConsts.KEY_ESCAPE),
-            ControllerButton("gas", "GAS (▲)", "", 0.88f, 0.48f, 40f, HidConsts.KEY_UP_ARROW),
-            ControllerButton("brake", "BRAKE (▼)", "", 0.74f, 0.76f, 36f, HidConsts.KEY_DOWN_ARROW),
-            ControllerButton("handbrake", "E-BRAKE", "", 0.90f, 0.80f, 32f, HidConsts.KEY_SPACE)
+            ControllerButton("nitro", "NITRO", "", 0.10f, 0.16f, 30f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT, gamepadButtonIndex = 6),
+            ControllerButton("camera", "CAM", "", 0.24f, 0.16f, 26f, HidConsts.KEY_C, gamepadButtonIndex = 4),
+            ControllerButton("pause", "PAUSE", "", 0.50f, 0.22f, 24f, HidConsts.KEY_ESCAPE, gamepadButtonIndex = 9),
+            ControllerButton("gas", "GAS (▲)", "", 0.88f, 0.48f, 40f, HidConsts.KEY_UP_ARROW, gamepadButtonIndex = 1),
+            ControllerButton("brake", "BRAKE (▼)", "", 0.74f, 0.76f, 36f, HidConsts.KEY_DOWN_ARROW, gamepadButtonIndex = 2),
+            ControllerButton("handbrake", "E-BRAKE", "", 0.90f, 0.80f, 32f, HidConsts.KEY_SPACE, gamepadButtonIndex = 7)
         )
     )
 
@@ -167,16 +175,16 @@ object PresetRepository {
         joystickKeyRight = HidConsts.KEY_RIGHT_ARROW,
         joystickLabel = "ARROWS",
         buttons = mutableListOf(
-            ControllerButton("kb_ctrl", "Ctrl", "", 0.08f, 0.16f, 26f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_CTRL),
-            ControllerButton("kb_shift", "Shift", "", 0.22f, 0.16f, 26f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT),
-            ControllerButton("kb_esc", "Esc", "", 0.44f, 0.08f, 22f, HidConsts.KEY_ESCAPE),
-            ControllerButton("kb_enter", "Enter", "", 0.56f, 0.08f, 22f, HidConsts.KEY_ENTER),
-            ControllerButton("kb_1", "1", "", 0.74f, 0.44f, 28f, HidConsts.KEY_1),
-            ControllerButton("kb_2", "2", "", 0.84f, 0.44f, 28f, HidConsts.KEY_2),
-            ControllerButton("kb_3", "3", "", 0.94f, 0.44f, 28f, HidConsts.KEY_3),
-            ControllerButton("kb_tab", "Tab", "", 0.74f, 0.66f, 28f, HidConsts.KEY_TAB),
-            ControllerButton("kb_space", "Space", "", 0.88f, 0.66f, 36f, HidConsts.KEY_SPACE),
-            ControllerButton("kb_back", "Back", "", 0.84f, 0.86f, 28f, HidConsts.KEY_BACKSPACE)
+            ControllerButton("kb_ctrl", "Ctrl", "", 0.08f, 0.16f, 26f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_CTRL, gamepadButtonIndex = 5),
+            ControllerButton("kb_shift", "Shift", "", 0.22f, 0.16f, 26f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT, gamepadButtonIndex = 6),
+            ControllerButton("kb_esc", "Esc", "", 0.44f, 0.22f, 24f, HidConsts.KEY_ESCAPE, gamepadButtonIndex = 9),
+            ControllerButton("kb_enter", "Enter", "", 0.56f, 0.22f, 24f, HidConsts.KEY_ENTER, gamepadButtonIndex = 10),
+            ControllerButton("kb_1", "1", "", 0.74f, 0.44f, 28f, HidConsts.KEY_1, gamepadButtonIndex = 1),
+            ControllerButton("kb_2", "2", "", 0.84f, 0.44f, 28f, HidConsts.KEY_2, gamepadButtonIndex = 2),
+            ControllerButton("kb_3", "3", "", 0.94f, 0.44f, 28f, HidConsts.KEY_3, gamepadButtonIndex = 3),
+            ControllerButton("kb_tab", "Tab", "", 0.74f, 0.66f, 28f, HidConsts.KEY_TAB, gamepadButtonIndex = 4),
+            ControllerButton("kb_space", "Space", "", 0.88f, 0.66f, 36f, HidConsts.KEY_SPACE, gamepadButtonIndex = 7),
+            ControllerButton("kb_back", "Back", "", 0.84f, 0.86f, 28f, HidConsts.KEY_BACKSPACE, gamepadButtonIndex = 8)
         )
     )
 

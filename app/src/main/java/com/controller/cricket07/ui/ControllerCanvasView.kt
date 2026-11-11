@@ -21,10 +21,11 @@ import kotlin.math.hypot
 import kotlin.math.min
 
 /**
- * High-performance Gamepad Canvas:
- * 1. 8-Way Analog Thumbstick Dial (supports all diagonal and cardinal directions)
- * 2. Multi-touch floating buttons
- * 3. Interactive Edit Mode with Drag-and-Drop repositioning + SharedPreferences persistence.
+ * High-performance AMOLED Gamepad & Keyboard Canvas:
+ * 1. 8-Way 360° Analog Thumbstick Dial (supports full analog axes + cardinal/diagonal shots)
+ * 2. Multi-touch floating buttons matching EA Sports Cricket 07 and Gamepad configurations
+ * 3. Simultaneous Gamepad DirectInput reporting & Boot Keyboard reporting
+ * 4. Interactive Drag-and-Drop layout editor with persistent coordinates in SharedPreferences
  */
 class ControllerCanvasView @JvmOverloads constructor(
     context: Context,
@@ -49,6 +50,7 @@ class ControllerCanvasView @JvmOverloads constructor(
             knobOffsetX = 0f
             knobOffsetY = 0f
             activeJoystickKeys.clear()
+            activeHatSwitch = 0
             if (!value) {
                 dispatchHidUpdate()
             }
@@ -67,6 +69,7 @@ class ControllerCanvasView @JvmOverloads constructor(
     private var joystickPointerId: Int? = null
     private var knobOffsetX = 0f
     private var knobOffsetY = 0f
+    private var activeHatSwitch: Byte = 0
     private val activeJoystickKeys = HashSet<Byte>()
 
     private val activePointerMap = ConcurrentHashMap<Int, ControllerButton>()
@@ -154,7 +157,9 @@ class ControllerCanvasView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
-    var onStateChanged: ((modifierMask: Byte, pressedKeys: Set<Byte>) -> Unit)? = null
+    // Callbacks for HID Transmission
+    var onGamepadStateChanged: ((leftStickX: Byte, leftStickY: Byte, hatSwitch: Byte, buttonsMask: Short) -> Unit)? = null
+    var onKeyboardStateChanged: ((modifierMask: Byte, pressedKeys: Set<Byte>) -> Unit)? = null
 
     init {
         loadCustomPositions()
@@ -171,6 +176,7 @@ class ControllerCanvasView @JvmOverloads constructor(
         knobOffsetX = 0f
         knobOffsetY = 0f
         activeJoystickKeys.clear()
+        activeHatSwitch = 0
         dispatchHidUpdate()
         postInvalidate()
     }
@@ -216,7 +222,7 @@ class ControllerCanvasView @JvmOverloads constructor(
                 canvas.drawCircle(cx, cy, radius, if (isPressed) borderPressedPaint else borderNormalPaint)
             }
 
-            // Draw Labels
+            // Draw Labels (centered with room for sub-label)
             if (btn.subLabel.isNotEmpty() && !isEditMode) {
                 val textY = cy - dpToPx(3f)
                 canvas.drawText(btn.label, cx, textY, labelPaint)
@@ -344,7 +350,7 @@ class ControllerCanvasView @JvmOverloads constructor(
                             } else {
                                 draggedButton?.let { button ->
                                     button.xPercent = (x / viewWidth).coerceIn(0.04f, 0.96f)
-                                    button.yPercent = (y / viewHeight).coerceIn(0.08f, 0.92f)
+                                    button.yPercent = (y / viewHeight).coerceIn(0.12f, 0.88f)
                                     postInvalidate()
                                 }
                             }
@@ -431,6 +437,7 @@ class ControllerCanvasView @JvmOverloads constructor(
                         knobOffsetX = 0f
                         knobOffsetY = 0f
                         activeJoystickKeys.clear()
+                        activeHatSwitch = 0
                         dispatchHidUpdate()
                     } else {
                         activePointerMap.remove(pointerId)
@@ -444,6 +451,7 @@ class ControllerCanvasView @JvmOverloads constructor(
                     knobOffsetX = 0f
                     knobOffsetY = 0f
                     activeJoystickKeys.clear()
+                    activeHatSwitch = 0
                     activePointerMap.clear()
                     dispatchHidUpdate()
                     postInvalidate()
@@ -466,8 +474,9 @@ class ControllerCanvasView @JvmOverloads constructor(
         }
 
         activeJoystickKeys.clear()
+        activeHatSwitch = 0
 
-        val deadzone = maxRadius * 0.25f
+        val deadzone = maxRadius * 0.22f
         if (distance >= deadzone) {
             val angleDeg = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
 
@@ -481,37 +490,45 @@ class ControllerCanvasView @JvmOverloads constructor(
                     // UP + LEFT
                     activeJoystickKeys.add(kUp)
                     activeJoystickKeys.add(kLeft)
+                    activeHatSwitch = 8 // Up-Left
                 }
                 angleDeg in -112.5f..-67.5f -> {
                     // UP
                     activeJoystickKeys.add(kUp)
+                    activeHatSwitch = 1 // Up
                 }
                 angleDeg in -67.5f..-22.5f -> {
                     // UP + RIGHT
                     activeJoystickKeys.add(kUp)
                     activeJoystickKeys.add(kRight)
+                    activeHatSwitch = 2 // Up-Right
                 }
                 angleDeg in -22.5f..22.5f -> {
                     // RIGHT
                     activeJoystickKeys.add(kRight)
+                    activeHatSwitch = 3 // Right
                 }
                 angleDeg in 22.5f..67.5f -> {
                     // DOWN + RIGHT
                     activeJoystickKeys.add(kDown)
                     activeJoystickKeys.add(kRight)
+                    activeHatSwitch = 4 // Down-Right
                 }
                 angleDeg in 67.5f..112.5f -> {
                     // DOWN
                     activeJoystickKeys.add(kDown)
+                    activeHatSwitch = 5 // Down
                 }
                 angleDeg in 112.5f..157.5f -> {
                     // DOWN + LEFT
                     activeJoystickKeys.add(kDown)
                     activeJoystickKeys.add(kLeft)
+                    activeHatSwitch = 6 // Down-Left
                 }
                 else -> {
                     // LEFT
                     activeJoystickKeys.add(kLeft)
+                    activeHatSwitch = 7 // Left
                 }
             }
         }
@@ -542,6 +559,23 @@ class ControllerCanvasView @JvmOverloads constructor(
     private fun dispatchHidUpdate() {
         if (isEditMode) return
 
+        // 1. GAMEPAD REPORT COMPUTATION (Report ID 2)
+        val maxRadius = dpToPx(joystickBaseRadiusDp)
+        val normX = if (maxRadius > 0) (knobOffsetX / maxRadius).coerceIn(-1f, 1f) else 0f
+        val normY = if (maxRadius > 0) (knobOffsetY / maxRadius).coerceIn(-1f, 1f) else 0f
+
+        val stickX = (127 + (normX * 127)).toInt().coerceIn(0, 255).toByte()
+        val stickY = (127 + (normY * 127)).toInt().coerceIn(0, 255).toByte()
+
+        var buttonsMask: Int = 0
+        for (btn in activePointerMap.values) {
+            if (btn.gamepadButtonIndex in 1..16) {
+                buttonsMask = buttonsMask or (1 shl (btn.gamepadButtonIndex - 1))
+            }
+        }
+        onGamepadStateChanged?.invoke(stickX, stickY, activeHatSwitch, buttonsMask.toShort())
+
+        // 2. KEYBOARD REPORT COMPUTATION (Report ID 1)
         var modifierMask: Byte = 0
         val pressedKeys = HashSet<Byte>()
 
@@ -554,7 +588,7 @@ class ControllerCanvasView @JvmOverloads constructor(
         }
 
         pressedKeys.addAll(activeJoystickKeys)
-        onStateChanged?.invoke(modifierMask, pressedKeys)
+        onKeyboardStateChanged?.invoke(modifierMask, pressedKeys)
     }
 
     // ==========================================
