@@ -1,7 +1,7 @@
 package com.controller.cricket07.hid
 
 /**
- * Standard USB HID Keyboard Report Descriptor
+ * Standard USB HID Keyboard Report Descriptor (8-byte Boot Keyboard Report).
  * Plug & Play on Windows 10/11 and macOS without third-party drivers or software.
  */
 object HidDescriptor {
@@ -29,7 +29,7 @@ object HidDescriptor {
         0x91.toByte(), 0x02.toByte(), //   OUTPUT (Data,Var,Abs) -> LED Report
         0x95.toByte(), 0x01.toByte(), //   REPORT_COUNT (1)
         0x75.toByte(), 0x03.toByte(), //   REPORT_SIZE (3)
-        0x91.toByte(), 0x01.toByte(), //   OUTPUT (Cnst,Var,Abs) -> LED Padding
+        0x91.toByte(), 0x03.toByte(), //   OUTPUT (Cnst,Var,Abs) -> LED Padding
         0x95.toByte(), 0x06.toByte(), //   REPORT_COUNT (6)
         0x75.toByte(), 0x08.toByte(), //   REPORT_SIZE (8)
         0x15.toByte(), 0x00.toByte(), //   LOGICAL_MINIMUM (0)
