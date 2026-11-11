@@ -11,8 +11,9 @@ android {
         applicationId = "com.controller.cricket07"
         minSdk = 28
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0.0"
+        versionCode = 3
+        versionName = "2.1.0"
+        setProperty("archivesBaseName", "Cricket07Controller-v2.1.0")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

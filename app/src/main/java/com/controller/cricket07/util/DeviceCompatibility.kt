@@ -8,6 +8,8 @@ import android.os.Build
  * (e.g. OnePlus 13R, Samsung Galaxy S24, Xiaomi, Google Pixel, etc.)
  */
 object DeviceCompatibility {
+    const val APP_VERSION = "v2.1.0"
+
     val manufacturer: String = Build.MANUFACTURER.replaceFirstChar { 
         if (it.isLowerCase()) it.titlecase() else it.toString() 
     }

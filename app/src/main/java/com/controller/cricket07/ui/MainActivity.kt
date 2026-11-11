@@ -210,8 +210,8 @@ class MainActivity : AppCompatActivity() {
         topBarNormal.bringToFront()
         topBarEdit.bringToFront()
 
-        // Display detected mobile model and compatibility
-        tvDeviceInfo.text = "📱 Detected: ${DeviceCompatibility.displayName} • P2 Ready"
+        // Display detected mobile model, app version, and compatibility
+        tvDeviceInfo.text = "📱 ${DeviceCompatibility.displayName} • ${DeviceCompatibility.APP_VERSION} (P2 Ready)"
 
         // Restore saved settings
         val settingsPrefs = getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
@@ -487,7 +487,7 @@ class MainActivity : AppCompatActivity() {
         deviceNames.add("➕ Make Phone Discoverable (Pair New PC)")
 
         val builder = AlertDialog.Builder(this)
-        builder.setTitle("Bluetooth HID Connection\n(${DeviceCompatibility.fullDeviceInfo})")
+        builder.setTitle("Cricket 07 Controller ${DeviceCompatibility.APP_VERSION}\n(${DeviceCompatibility.fullDeviceInfo})")
         builder.setItems(deviceNames.toTypedArray()) { _, which ->
             if (which < bonded.size) {
                 val selectedDevice = bonded[which]
