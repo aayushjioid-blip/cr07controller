@@ -30,20 +30,18 @@ jobs:
           gradle assembleDebug assembleRelease --stacktrace
           
           mkdir -p dist
-          # Copy release APK with versioned naming convention
-          find app/build/outputs/apk/release/ -name "*.apk" -exec cp {} dist/Cricket07Controller-v2.1.0-release.apk \;
-          # Copy debug APK with versioned naming convention
-          find app/build/outputs/apk/debug/ -name "*.apk" -exec cp {} dist/Cricket07Controller-v2.1.0-debug.apk \;
+          find app/build/outputs/apk/release/ -name "*.apk" -exec cp {} dist/Cricket07Controller-v2.2.0-release.apk \;
+          find app/build/outputs/apk/debug/ -name "*.apk" -exec cp {} dist/Cricket07Controller-v2.2.0-debug.apk \;
           ls -la dist/
 
       - name: Upload Versioned Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Cricket07Controller-v2.1.0-Release-APK
-          path: dist/Cricket07Controller-v2.1.0-release.apk
+          name: Cricket07Controller-v2.2.0-Release-APK
+          path: dist/Cricket07Controller-v2.2.0-release.apk
 
       - name: Upload Versioned Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Cricket07Controller-v2.1.0-Debug-APK
-          path: dist/Cricket07Controller-v2.1.0-debug.apk
+          name: Cricket07Controller-v2.2.0-Debug-APK
+          path: dist/Cricket07Controller-v2.2.0-debug.apk

@@ -135,9 +135,16 @@ class MainActivity : AppCompatActivity() {
                 when (state) {
                     BluetoothProfile.STATE_CONNECTED -> {
                         connectedHostDevice = device
-                        val modeLabel = if (isGamepadMode) "Gamepad P2" else "Keyboard"
+                        val modeLabel = if (isGamepadMode) "P-2 Controller" else "P-1 Keyboard"
                         updateStatus("CONNECTED: $devName ($modeLabel)", true)
                         Toast.makeText(this@MainActivity, "Connected to $devName as $modeLabel", Toast.LENGTH_SHORT).show()
+
+                        // Send initial neutral report immediately to calibrate Windows DirectInput / joy.cpl
+                        if (isGamepadMode) {
+                            mainHandler.postDelayed({
+                                sendGamepadReport(128.toByte(), 128.toByte(), 8.toByte(), 0)
+                            }, 100)
+                        }
                     }
                     BluetoothProfile.STATE_CONNECTING -> {
                         updateStatus("Connecting to $devName...", false)
@@ -154,9 +161,25 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onGetReport(device: BluetoothDevice?, type: Byte, id: Byte, bufferSize: Int) {
+            Log.d(TAG, "onGetReport: type=$type, id=$id, bufferSize=$bufferSize")
             try {
-                hidDevice?.reportError(device, BluetoothHidDevice.ERROR_RSP_SUCCESS)
-            } catch (_: Exception) {}
+                if (id == HidDescriptor.REPORT_ID_GAMEPAD) {
+                    // Return exact 7-byte neutral Gamepad state to satisfy Windows GET_REPORT handshake
+                    val neutralGamepad = byteArrayOf(
+                        128.toByte(), 128.toByte(), 128.toByte(), 128.toByte(),
+                        0x08.toByte(), // Hat Switch: 8 = Released / Centered
+                        0x00.toByte(), 0x00.toByte() // Buttons: 0
+                    )
+                    hidDevice?.replyReport(device, type, id, neutralGamepad)
+                } else if (id == HidDescriptor.REPORT_ID_KEYBOARD) {
+                    val neutralKeyboard = ByteArray(8)
+                    hidDevice?.replyReport(device, type, id, neutralKeyboard)
+                } else {
+                    hidDevice?.reportError(device, BluetoothHidDevice.ERROR_RSP_SUCCESS)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in onGetReport", e)
+            }
         }
 
         override fun onSetReport(device: BluetoothDevice?, type: Byte, id: Byte, data: ByteArray?) {
@@ -274,11 +297,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateModeUI() {
         if (isGamepadMode) {
-            tvActiveModeTitle.text = "🎮 CONTROLLER (P2)"
+            tvActiveModeTitle.text = "🎮 P-2: CONTROLLER (ACTIVE)"
             tvActiveModeTitle.setTextColor(Color.parseColor("#00E5FF"))
             btnModeToggle.setBackgroundResource(R.drawable.bg_pill_cyan)
         } else {
-            tvActiveModeTitle.text = "⌨️ KEYBOARD (Solo)"
+            tvActiveModeTitle.text = "⌨️ P-1: KEYBOARD (ACTIVE)"
             tvActiveModeTitle.setTextColor(Color.parseColor("#69F0AE"))
             btnModeToggle.setBackgroundResource(R.drawable.bg_pill_green)
         }
@@ -289,33 +312,33 @@ class MainActivity : AppCompatActivity() {
 
         connectedHostDevice?.let { dev ->
             val devName = getDeviceName(dev)
-            val modeLabel = if (isGamepadMode) "Gamepad P2" else "Keyboard"
+            val modeLabel = if (isGamepadMode) "P-2 Controller" else "P-1 Keyboard"
             updateStatus("CONNECTED: $devName ($modeLabel)", true)
         }
     }
 
     private fun showModeSelectionDialog() {
         val options = arrayOf(
-            "🎮 Game Controller Mode (Player 2 for PC Multiplayer - DirectInput)",
-            "⌨️ Keyboard Mode (Solo Play - Standard Keystrokes)",
+            "🎮 P-2: Game Controller (Player 2 for PC Multiplayer - DirectInput)",
+            "⌨️ P-1: PC Keyboard (Solo Play - Direct Keystrokes)",
             "🎨 Switch Button Layout Preset (${canvasView.activePreset.name})"
         )
 
-        val currentSelection = if (isGamepadMode) 0 else 1
-
         AlertDialog.Builder(this)
-            .setTitle("Device Operation Mode")
+            .setTitle("Select Player Mode")
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> {
                         isGamepadMode = true
                         updateModeUI()
-                        Toast.makeText(this, "Active Mode: Game Controller (Player 2)", Toast.LENGTH_SHORT).show()
+                        sendGamepadReport(128.toByte(), 128.toByte(), 8.toByte(), 0)
+                        Toast.makeText(this, "Active: P-2 Game Controller (Multiplayer)", Toast.LENGTH_SHORT).show()
                     }
                     1 -> {
                         isGamepadMode = false
                         updateModeUI()
-                        Toast.makeText(this, "Active Mode: Keyboard (Solo)", Toast.LENGTH_SHORT).show()
+                        sendKeyboardReport(0, emptySet())
+                        Toast.makeText(this, "Active: P-1 PC Keyboard (Solo)", Toast.LENGTH_SHORT).show()
                     }
                     2 -> {
                         showPresetSelectionDialog()
@@ -439,7 +462,7 @@ class MainActivity : AppCompatActivity() {
             // Automatically detect phone name and brand for Windows discovery
             val sdpSettings = BluetoothHidDeviceAppSdpSettings(
                 "Cricket 07 Controller",
-                "${DeviceCompatibility.displayName} Controller",
+                "${DeviceCompatibility.displayName} Controller v2.2",
                 DeviceCompatibility.manufacturer,
                 BluetoothHidDevice.SUBCLASS2_GAMEPAD,
                 HidDescriptor.COMPOSITE_DESCRIPTOR
@@ -532,14 +555,22 @@ class MainActivity : AppCompatActivity() {
         val hid = hidDevice ?: return
 
         try {
+            // Exactly matches HidDescriptor.COMPOSITE_DESCRIPTOR Gamepad Collection:
+            // Byte 0: X-Axis (0-255, neutral 128)
+            // Byte 1: Y-Axis (0-255, neutral 128)
+            // Byte 2: Z-Axis (0-255, neutral 128)
+            // Byte 3: Rz-Axis (0-255, neutral 128)
+            // Byte 4: Hat Switch (lower 4 bits: 0-7 directions, 8 = released/centered)
+            // Byte 5: Buttons 1-8 bitmask
+            // Byte 6: Buttons 9-16 bitmask
             val report = ByteArray(7)
-            report[0] = (buttonsMask.toInt() and 0xFF).toByte()
-            report[1] = ((buttonsMask.toInt() shr 8) and 0xFF).toByte()
-            report[2] = (hatSwitch.toInt() and 0x0F).toByte()
-            report[3] = leftStickX
-            report[4] = leftStickY
-            report[5] = 127.toByte() // Right stick Z neutral
-            report[6] = 127.toByte() // Right stick Rz neutral
+            report[0] = leftStickX
+            report[1] = leftStickY
+            report[2] = 128.toByte() // Right stick Z neutral
+            report[3] = 128.toByte() // Right stick Rz neutral
+            report[4] = (hatSwitch.toInt() and 0x0F).toByte()
+            report[5] = (buttonsMask.toInt() and 0xFF).toByte()
+            report[6] = ((buttonsMask.toInt() shr 8) and 0xFF).toByte()
 
             hid.sendReport(device, HidDescriptor.REPORT_ID_GAMEPAD.toInt(), report)
         } catch (e: Exception) {

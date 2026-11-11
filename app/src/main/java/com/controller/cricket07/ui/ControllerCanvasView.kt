@@ -69,7 +69,7 @@ class ControllerCanvasView @JvmOverloads constructor(
     private var joystickPointerId: Int? = null
     private var knobOffsetX = 0f
     private var knobOffsetY = 0f
-    private var activeHatSwitch: Byte = 0
+    private var activeHatSwitch: Byte = 8.toByte() // 8 = Null State (Released/Centered)
     private val activeJoystickKeys = HashSet<Byte>()
 
     private val activePointerMap = ConcurrentHashMap<Int, ControllerButton>()
@@ -437,7 +437,7 @@ class ControllerCanvasView @JvmOverloads constructor(
                         knobOffsetX = 0f
                         knobOffsetY = 0f
                         activeJoystickKeys.clear()
-                        activeHatSwitch = 0
+                        activeHatSwitch = 8.toByte()
                         dispatchHidUpdate()
                     } else {
                         activePointerMap.remove(pointerId)
@@ -451,7 +451,7 @@ class ControllerCanvasView @JvmOverloads constructor(
                     knobOffsetX = 0f
                     knobOffsetY = 0f
                     activeJoystickKeys.clear()
-                    activeHatSwitch = 0
+                    activeHatSwitch = 8.toByte()
                     activePointerMap.clear()
                     dispatchHidUpdate()
                     postInvalidate()
@@ -474,9 +474,8 @@ class ControllerCanvasView @JvmOverloads constructor(
         }
 
         activeJoystickKeys.clear()
-        activeHatSwitch = 0
 
-        val deadzone = maxRadius * 0.22f
+        val deadzone = maxRadius * 0.20f
         if (distance >= deadzone) {
             val angleDeg = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
 
@@ -490,47 +489,49 @@ class ControllerCanvasView @JvmOverloads constructor(
                     // UP + LEFT
                     activeJoystickKeys.add(kUp)
                     activeJoystickKeys.add(kLeft)
-                    activeHatSwitch = 8 // Up-Left
+                    activeHatSwitch = 7.toByte() // 315 deg (Up-Left)
                 }
                 angleDeg in -112.5f..-67.5f -> {
                     // UP
                     activeJoystickKeys.add(kUp)
-                    activeHatSwitch = 1 // Up
+                    activeHatSwitch = 0.toByte() // 0 deg (Up)
                 }
                 angleDeg in -67.5f..-22.5f -> {
                     // UP + RIGHT
                     activeJoystickKeys.add(kUp)
                     activeJoystickKeys.add(kRight)
-                    activeHatSwitch = 2 // Up-Right
+                    activeHatSwitch = 1.toByte() // 45 deg (Up-Right)
                 }
                 angleDeg in -22.5f..22.5f -> {
                     // RIGHT
                     activeJoystickKeys.add(kRight)
-                    activeHatSwitch = 3 // Right
+                    activeHatSwitch = 2.toByte() // 90 deg (Right)
                 }
                 angleDeg in 22.5f..67.5f -> {
                     // DOWN + RIGHT
                     activeJoystickKeys.add(kDown)
                     activeJoystickKeys.add(kRight)
-                    activeHatSwitch = 4 // Down-Right
+                    activeHatSwitch = 3.toByte() // 135 deg (Down-Right)
                 }
                 angleDeg in 67.5f..112.5f -> {
                     // DOWN
                     activeJoystickKeys.add(kDown)
-                    activeHatSwitch = 5 // Down
+                    activeHatSwitch = 4.toByte() // 180 deg (Down)
                 }
                 angleDeg in 112.5f..157.5f -> {
                     // DOWN + LEFT
                     activeJoystickKeys.add(kDown)
                     activeJoystickKeys.add(kLeft)
-                    activeHatSwitch = 6 // Down-Left
+                    activeHatSwitch = 5.toByte() // 225 deg (Down-Left)
                 }
                 else -> {
                     // LEFT
                     activeJoystickKeys.add(kLeft)
-                    activeHatSwitch = 7 // Left
+                    activeHatSwitch = 6.toByte() // 270 deg (Left)
                 }
             }
+        } else {
+            activeHatSwitch = 8.toByte() // 8 = Null State (Released/Centered)
         }
         dispatchHidUpdate()
     }
@@ -564,8 +565,8 @@ class ControllerCanvasView @JvmOverloads constructor(
         val normX = if (maxRadius > 0) (knobOffsetX / maxRadius).coerceIn(-1f, 1f) else 0f
         val normY = if (maxRadius > 0) (knobOffsetY / maxRadius).coerceIn(-1f, 1f) else 0f
 
-        val stickX = (127 + (normX * 127)).toInt().coerceIn(0, 255).toByte()
-        val stickY = (127 + (normY * 127)).toInt().coerceIn(0, 255).toByte()
+        val stickX = (128 + (normX * 127)).toInt().coerceIn(0, 255).toByte()
+        val stickY = (128 + (normY * 127)).toInt().coerceIn(0, 255).toByte()
 
         var buttonsMask: Int = 0
         for (btn in activePointerMap.values) {
