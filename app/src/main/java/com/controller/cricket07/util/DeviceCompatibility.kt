@@ -35,4 +35,6 @@ object DeviceCompatibility {
     val summaryText: String by lazy {
         "$displayName (Android $androidRelease)"
     }
+
+    val fullDeviceInfo: String get() = summaryText
 }
