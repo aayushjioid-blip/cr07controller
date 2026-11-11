@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothHidDevice
 import android.bluetooth.BluetoothHidDeviceAppSdpSettings
 import android.bluetooth.BluetoothProfile
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -15,9 +16,12 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.View
 import android.view.WindowManager
+import android.widget.RelativeLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -35,10 +39,18 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "Cricket07Main"
+        private const val PREFS_SETTINGS = "controller_settings"
+        private const val KEY_ACTIVE_PRESET = "active_preset_id"
     }
 
     private lateinit var canvasView: ControllerCanvasView
     private lateinit var statusText: TextView
+    private lateinit var topBarNormal: RelativeLayout
+    private lateinit var topBarEdit: RelativeLayout
+    private lateinit var btnSelectPreset: TextView
+    private lateinit var btnEditLayout: TextView
+    private lateinit var btnResetLayout: TextView
+    private lateinit var btnSaveLayout: TextView
 
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         try {
@@ -62,7 +74,6 @@ class MainActivity : AppCompatActivity() {
                     hidDevice = proxy as? BluetoothHidDevice
                     if (hidDevice != null) {
                         Log.d(TAG, "HID Device proxy obtained. Registering app...")
-                        // Small delay to allow proxy binding to stabilize
                         mainHandler.postDelayed({ registerHidApp() }, 300)
                     } else {
                         updateStatus("Device does not support Bluetooth HID Device profile", false)
@@ -93,7 +104,6 @@ class MainActivity : AppCompatActivity() {
                 if (registered) {
                     val bonded = getBondedDevices()
                     if (bonded.isNotEmpty()) {
-                        // Attempt automatic connection to first bonded laptop/PC
                         val firstTarget = bonded.first()
                         val targetName = getDeviceName(firstTarget)
                         updateStatus("REGISTERED! Connecting to $targetName...", false)
@@ -175,18 +185,109 @@ class MainActivity : AppCompatActivity() {
 
         canvasView = findViewById(R.id.controller_canvas)
         statusText = findViewById(R.id.tv_status)
+        topBarNormal = findViewById(R.id.top_bar_normal)
+        topBarEdit = findViewById(R.id.top_bar_edit)
+        btnSelectPreset = findViewById(R.id.btn_select_preset)
+        btnEditLayout = findViewById(R.id.btn_edit_layout)
+        btnResetLayout = findViewById(R.id.btn_reset_layout)
+        btnSaveLayout = findViewById(R.id.btn_save_layout)
 
-        canvasView.setPreset(PresetRepository.CRICKET_07_PRESET)
+        // Restore saved preset
+        val settingsPrefs = getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
+        val savedPresetId = settingsPrefs.getString(KEY_ACTIVE_PRESET, PresetRepository.createCricket07Preset().id)
+        val initialPreset = PresetRepository.PRESETS.find { it.id == savedPresetId } ?: PresetRepository.PRESETS.first()
+        canvasView.setPreset(initialPreset)
+        btnSelectPreset.text = "🎮 ${initialPreset.name} ▼"
 
         canvasView.onStateChanged = { modifierMask, keys ->
             sendKeyboardReport(modifierMask, keys)
         }
 
+        // Bluetooth dialog trigger
         statusText.setOnClickListener {
             showDeviceConnectionDialog()
         }
 
+        // Preset / Mode Selector trigger
+        btnSelectPreset.setOnClickListener {
+            showPresetSelectionDialog()
+        }
+
+        // Edit Mode triggers
+        btnEditLayout.setOnClickListener {
+            enterEditMode()
+        }
+
+        btnSaveLayout.setOnClickListener {
+            exitEditMode(save = true)
+        }
+
+        btnResetLayout.setOnClickListener {
+            showResetLayoutDialog()
+        }
+
+        // Handle System Back Button
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (canvasView.isEditMode) {
+                    exitEditMode(save = true)
+                } else {
+                    finish()
+                }
+            }
+        })
+
         checkPermissionsAndStart()
+    }
+
+    private fun enterEditMode() {
+        canvasView.isEditMode = true
+        topBarNormal.visibility = View.GONE
+        topBarEdit.visibility = View.VISIBLE
+        Toast.makeText(this, "Edit Mode: Drag buttons to move them", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun exitEditMode(save: Boolean) {
+        if (save) {
+            canvasView.saveCustomPositions()
+            Toast.makeText(this, "Layout Saved!", Toast.LENGTH_SHORT).show()
+        }
+        canvasView.isEditMode = false
+        topBarEdit.visibility = View.GONE
+        topBarNormal.visibility = View.VISIBLE
+    }
+
+    private fun showResetLayoutDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Reset Layout")
+            .setMessage("Reset all buttons and the analog dial to their default positions for '${canvasView.activePreset.name}'?")
+            .setPositiveButton("Reset") { _, _ ->
+                canvasView.resetToDefaults()
+                Toast.makeText(this, "Reset to defaults", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showPresetSelectionDialog() {
+        val presetNames = PresetRepository.PRESETS.map { "${it.name}\n${it.description}" }.toTypedArray()
+        val currentIndex = PresetRepository.PRESETS.indexOfFirst { it.id == canvasView.activePreset.id }.coerceAtLeast(0)
+
+        AlertDialog.Builder(this)
+            .setTitle("Select Controller Mode")
+            .setSingleChoiceItems(presetNames, currentIndex) { dialog, which ->
+                val selected = PresetRepository.PRESETS[which]
+                canvasView.setPreset(selected)
+                btnSelectPreset.text = "🎮 ${selected.name} ▼"
+
+                val settingsPrefs = getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
+                settingsPrefs.edit().putString(KEY_ACTIVE_PRESET, selected.id).apply()
+
+                Toast.makeText(this, "Mode: ${selected.name}", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun checkPermissionsAndStart() {
@@ -255,7 +356,6 @@ class MainActivity : AppCompatActivity() {
                 HidDescriptor.KEYBOARD_DESCRIPTOR
             )
 
-            // null inQos and outQos allows Fluoride daemon to use standard system defaults
             hid.registerApp(
                 sdpSettings,
                 null,

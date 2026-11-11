@@ -2,28 +2,29 @@ package com.controller.cricket07.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.util.AttributeSet
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
-import com.controller.cricket07.hid.HidConsts
 import com.controller.cricket07.model.ControllerButton
 import com.controller.cricket07.model.ControllerPreset
+import com.controller.cricket07.model.PresetRepository
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.atan2
-import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.min
-import kotlin.math.sin
 
 /**
- * Pure AMOLED Black Surface with:
- * 1. 8-Way Analog Thumbstick Dial (for diagonal & cardinal shot selection)
- * 2. Floating semi-transparent circular buttons matching Cricket 07 reference layout.
+ * High-performance Gamepad Canvas:
+ * 1. 8-Way Analog Thumbstick Dial (supports all diagonal and cardinal directions)
+ * 2. Multi-touch floating buttons
+ * 3. Interactive Edit Mode with Drag-and-Drop repositioning + SharedPreferences persistence.
  */
 class ControllerCanvasView @JvmOverloads constructor(
     context: Context,
@@ -31,9 +32,35 @@ class ControllerCanvasView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    // Analog Joystick configuration
-    private val joystickBaseXPercent = 0.12f
-    private val joystickBaseYPercent = 0.72f
+    private val prefs: SharedPreferences = context.getSharedPreferences("controller_layouts", Context.MODE_PRIVATE)
+
+    var activePreset: ControllerPreset = PresetRepository.createCricket07Preset()
+        private set
+
+    // Edit Mode state
+    var isEditMode: Boolean = false
+        set(value) {
+            field = value
+            activePointerMap.clear()
+            joystickPointerId = null
+            draggedButton = null
+            isDraggingJoystick = false
+            editPointerId = null
+            knobOffsetX = 0f
+            knobOffsetY = 0f
+            activeJoystickKeys.clear()
+            if (!value) {
+                dispatchHidUpdate()
+            }
+            postInvalidate()
+        }
+
+    // Drag-and-Drop tracking in Edit Mode
+    private var draggedButton: ControllerButton? = null
+    private var isDraggingJoystick: Boolean = false
+    private var editPointerId: Int? = null
+
+    // Analog Joystick Configuration
     private val joystickBaseRadiusDp = 62f
     private val joystickKnobRadiusDp = 30f
 
@@ -41,27 +68,6 @@ class ControllerCanvasView @JvmOverloads constructor(
     private var knobOffsetX = 0f
     private var knobOffsetY = 0f
     private val activeJoystickKeys = HashSet<Byte>()
-
-    // Standard Buttons (Ctrl, Space, Esc, Enter, Shift, Alt, W, A, S, D)
-    private val buttons = listOf(
-        // Top Left
-        ControllerButton("ctrl", "Ctrl", "", 0.06f, 0.12f, 30f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_CTRL),
-        ControllerButton("space", "Space", "", 0.06f, 0.28f, 30f, HidConsts.KEY_SPACE),
-
-        // Top Center
-        ControllerButton("esc", "Esc", "", 0.46f, 0.08f, 24f, HidConsts.KEY_ESCAPE),
-        ControllerButton("enter", "Enter", "", 0.54f, 0.08f, 24f, HidConsts.KEY_ENTER),
-
-        // Top Right
-        ControllerButton("shift", "Shift", "", 0.88f, 0.14f, 38f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_SHIFT),
-        ControllerButton("alt", "Alt", "", 0.88f, 0.33f, 28f, isModifier = true, modifierMask = HidConsts.MOD_LEFT_ALT),
-
-        // Action Diamond (Right Thumb)
-        ControllerButton("btn_w", "W", "", 0.83f, 0.58f, 30f, HidConsts.KEY_W),
-        ControllerButton("btn_a", "A", "", 0.74f, 0.72f, 30f, HidConsts.KEY_A),
-        ControllerButton("btn_d", "D", "", 0.92f, 0.72f, 30f, HidConsts.KEY_D),
-        ControllerButton("btn_s", "S", "", 0.83f, 0.86f, 30f, HidConsts.KEY_S)
-    )
 
     private val activePointerMap = ConcurrentHashMap<Int, ControllerButton>()
 
@@ -88,14 +94,40 @@ class ControllerCanvasView @JvmOverloads constructor(
         strokeWidth = 6f
     }
 
+    private val borderEditPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#00E5FF") // Vibrant Cyan for Edit Mode
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+        pathEffect = DashPathEffect(floatArrayOf(12f, 10f), 0f)
+    }
+
+    private val editGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(70, 0, 229, 255)
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+        pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f)
+    }
+
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
-        textSize = 38f
+        textSize = 34f
         isFakeBoldText = true
     }
 
-    // Joystick specific paints
+    private val subLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#B0BEC5")
+        textAlign = Paint.Align.CENTER
+        textSize = 20f
+    }
+
+    private val editCoordPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#00E5FF")
+        textAlign = Paint.Align.CENTER
+        textSize = 24f
+        isFakeBoldText = true
+    }
+
     private val joystickBasePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(35, 255, 255, 255)
         style = Paint.Style.FILL
@@ -124,8 +156,23 @@ class ControllerCanvasView @JvmOverloads constructor(
 
     var onStateChanged: ((modifierMask: Byte, pressedKeys: Set<Byte>) -> Unit)? = null
 
+    init {
+        loadCustomPositions()
+    }
+
     fun setPreset(preset: ControllerPreset) {
-        // Active layout matches Cricket 07 reference design
+        activePreset = preset
+        loadCustomPositions()
+        activePointerMap.clear()
+        joystickPointerId = null
+        draggedButton = null
+        isDraggingJoystick = false
+        editPointerId = null
+        knobOffsetX = 0f
+        knobOffsetY = 0f
+        activeJoystickKeys.clear()
+        dispatchHidUpdate()
+        postInvalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -136,60 +183,92 @@ class ControllerCanvasView @JvmOverloads constructor(
         val viewHeight = height.toFloat()
         if (viewWidth <= 0 || viewHeight <= 0) return
 
-        // 1. Draw Analog Joystick Dial
-        drawAnalogJoystick(canvas, viewWidth, viewHeight)
+        // 1. Draw Analog Joystick (if enabled for this preset)
+        if (activePreset.hasAnalogStick) {
+            drawAnalogJoystick(canvas, viewWidth, viewHeight)
+        }
 
         // 2. Draw Floating Circular Buttons
         val pressedSet = activePointerMap.values.map { it.id }.toSet()
 
-        for (btn in buttons) {
+        for (btn in activePreset.buttons) {
             val cx = btn.xPercent * viewWidth
             val cy = btn.yPercent * viewHeight
             val radius = dpToPx(btn.radiusDp)
 
-            val isPressed = pressedSet.contains(btn.id)
+            val isSelectedInEdit = isEditMode && draggedButton?.id == btn.id
+            val isPressed = pressedSet.contains(btn.id) || isSelectedInEdit
 
             canvas.drawCircle(cx, cy, radius, if (isPressed) buttonPressedPaint else buttonNormalPaint)
-            canvas.drawCircle(cx, cy, radius, if (isPressed) borderPressedPaint else borderNormalPaint)
 
-            val textY = cy - ((labelPaint.descent() + labelPaint.ascent()) / 2)
-            canvas.drawText(btn.label, cx, textY, labelPaint)
+            // Draw border: cyan dashed if in edit mode, solid otherwise
+            if (isEditMode) {
+                canvas.drawCircle(cx, cy, radius + dpToPx(3f), borderEditPaint)
+                if (isSelectedInEdit) {
+                    // Draw alignment crosshairs in Edit Mode
+                    canvas.drawLine(0f, cy, viewWidth, cy, editGuidePaint)
+                    canvas.drawLine(cx, 0f, cx, viewHeight, editGuidePaint)
+                    // Draw coordinates indicator
+                    val coordText = "${(btn.xPercent * 100).toInt()}%, ${(btn.yPercent * 100).toInt()}%"
+                    canvas.drawText(coordText, cx, cy + radius + dpToPx(16f), editCoordPaint)
+                }
+            } else {
+                canvas.drawCircle(cx, cy, radius, if (isPressed) borderPressedPaint else borderNormalPaint)
+            }
+
+            // Draw Labels
+            if (btn.subLabel.isNotEmpty() && !isEditMode) {
+                val textY = cy - dpToPx(3f)
+                canvas.drawText(btn.label, cx, textY, labelPaint)
+                canvas.drawText(btn.subLabel, cx, textY + dpToPx(18f), subLabelPaint)
+            } else {
+                val textY = cy - ((labelPaint.descent() + labelPaint.ascent()) / 2)
+                canvas.drawText(btn.label, cx, textY, labelPaint)
+            }
         }
     }
 
     private fun drawAnalogJoystick(canvas: Canvas, viewWidth: Float, viewHeight: Float) {
-        val baseX = joystickBaseXPercent * viewWidth
-        val baseY = joystickBaseYPercent * viewHeight
+        val baseX = activePreset.joystickXPercent * viewWidth
+        val baseY = activePreset.joystickYPercent * viewHeight
         val baseRadius = dpToPx(joystickBaseRadiusDp)
         val knobRadius = dpToPx(joystickKnobRadiusDp)
 
-        // Outer circular base
+        // Outer base
         canvas.drawCircle(baseX, baseY, baseRadius, joystickBasePaint)
-        canvas.drawCircle(baseX, baseY, baseRadius, joystickBaseBorderPaint)
 
-        // Draw 4 directional arrows around the outer perimeter (Up, Down, Left, Right)
+        if (isEditMode) {
+            canvas.drawCircle(baseX, baseY, baseRadius + dpToPx(4f), borderEditPaint)
+            if (isDraggingJoystick) {
+                canvas.drawLine(0f, baseY, viewWidth, baseY, editGuidePaint)
+                canvas.drawLine(baseX, 0f, baseX, viewHeight, editGuidePaint)
+                val coordText = "DIAL: ${(activePreset.joystickXPercent * 100).toInt()}%, ${(activePreset.joystickYPercent * 100).toInt()}%"
+                canvas.drawText(coordText, baseX, baseY + baseRadius + dpToPx(20f), editCoordPaint)
+            }
+        } else {
+            canvas.drawCircle(baseX, baseY, baseRadius, joystickBaseBorderPaint)
+        }
+
+        // 4 Directional Arrows
         val arrowSize = dpToPx(9f)
         val arrowDistance = baseRadius + dpToPx(8f)
-
-        // UP Triangle
         drawTriangle(canvas, baseX, baseY - arrowDistance, arrowSize, 0f)
-        // DOWN Triangle
         drawTriangle(canvas, baseX, baseY + arrowDistance, arrowSize, 180f)
-        // LEFT Triangle
         drawTriangle(canvas, baseX - arrowDistance, baseY, arrowSize, 270f)
-        // RIGHT Triangle
         drawTriangle(canvas, baseX + arrowDistance, baseY, arrowSize, 90f)
 
-        // Inner movable knob
-        val knobX = baseX + knobOffsetX
-        val knobY = baseY + knobOffsetY
-        val isActive = joystickPointerId != null
+        // Inner knob
+        val knobX = baseX + (if (isEditMode) 0f else knobOffsetX)
+        val knobY = baseY + (if (isEditMode) 0f else knobOffsetY)
+        val isActive = joystickPointerId != null || (isEditMode && isDraggingJoystick)
 
         canvas.drawCircle(knobX, knobY, knobRadius, if (isActive) joystickKnobActivePaint else joystickKnobPaint)
         canvas.drawCircle(knobX, knobY, knobRadius, if (isActive) borderPressedPaint else borderNormalPaint)
-
-        // Center ring inside knob
         canvas.drawCircle(knobX, knobY, knobRadius * 0.45f, borderNormalPaint)
+
+        // Joystick center label (e.g. SHOT, WASD, D-PAD)
+        val textY = knobY - ((subLabelPaint.descent() + subLabelPaint.ascent()) / 2)
+        canvas.drawText(activePreset.joystickLabel, knobX, textY, subLabelPaint)
     }
 
     private fun drawTriangle(canvas: Canvas, x: Float, y: Float, size: Float, rotationDegrees: Float) {
@@ -215,8 +294,87 @@ class ControllerCanvasView @JvmOverloads constructor(
 
             val viewWidth = width.toFloat()
             val viewHeight = height.toFloat()
-            val jBaseX = joystickBaseXPercent * viewWidth
-            val jBaseY = joystickBaseYPercent * viewHeight
+
+            // ==========================================
+            // EDIT MODE: Smooth Drag & Drop Repositioning
+            // ==========================================
+            if (isEditMode) {
+                when (actionMasked) {
+                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                        if (editPointerId == null) {
+                            val x = event.getX(actionIndex)
+                            val y = event.getY(actionIndex)
+
+                            // 1. Check Joystick Base hit
+                            if (activePreset.hasAnalogStick) {
+                                val jBaseX = activePreset.joystickXPercent * viewWidth
+                                val jBaseY = activePreset.joystickYPercent * viewHeight
+                                val jRadius = dpToPx(joystickBaseRadiusDp) * 1.5f
+                                if (hypot(x - jBaseX, y - jBaseY) <= jRadius) {
+                                    isDraggingJoystick = true
+                                    editPointerId = pointerId
+                                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                    postInvalidate()
+                                    return true
+                                }
+                            }
+
+                            // 2. Check Buttons hit
+                            findButtonAt(x, y)?.let { button ->
+                                draggedButton = button
+                                editPointerId = pointerId
+                                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                postInvalidate()
+                                return true
+                            }
+                        }
+                    }
+
+                    MotionEvent.ACTION_MOVE -> {
+                        val activeId = editPointerId ?: return true
+                        val pIndex = event.findPointerIndex(activeId)
+                        if (pIndex >= 0) {
+                            val x = event.getX(pIndex)
+                            val y = event.getY(pIndex)
+
+                            if (isDraggingJoystick && activePreset.hasAnalogStick) {
+                                activePreset.joystickXPercent = (x / viewWidth).coerceIn(0.08f, 0.92f)
+                                activePreset.joystickYPercent = (y / viewHeight).coerceIn(0.12f, 0.88f)
+                                postInvalidate()
+                            } else {
+                                draggedButton?.let { button ->
+                                    button.xPercent = (x / viewWidth).coerceIn(0.04f, 0.96f)
+                                    button.yPercent = (y / viewHeight).coerceIn(0.08f, 0.92f)
+                                    postInvalidate()
+                                }
+                            }
+                        }
+                    }
+
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                        if (pointerId == editPointerId) {
+                            draggedButton = null
+                            isDraggingJoystick = false
+                            editPointerId = null
+                            postInvalidate()
+                        }
+                    }
+
+                    MotionEvent.ACTION_CANCEL -> {
+                        draggedButton = null
+                        isDraggingJoystick = false
+                        editPointerId = null
+                        postInvalidate()
+                    }
+                }
+                return true
+            }
+
+            // ==========================================
+            // PLAY MODE: Real-time Multi-Touch Controller
+            // ==========================================
+            val jBaseX = activePreset.joystickXPercent * viewWidth
+            val jBaseY = activePreset.joystickYPercent * viewHeight
             val jBaseRadius = dpToPx(joystickBaseRadiusDp)
 
             when (actionMasked) {
@@ -224,13 +382,11 @@ class ControllerCanvasView @JvmOverloads constructor(
                     val x = event.getX(actionIndex)
                     val y = event.getY(actionIndex)
 
-                    // Check if touched the Analog Joystick dial
-                    if (hypot(x - jBaseX, y - jBaseY) <= jBaseRadius * 1.6f && joystickPointerId == null) {
+                    if (activePreset.hasAnalogStick && hypot(x - jBaseX, y - jBaseY) <= jBaseRadius * 1.6f && joystickPointerId == null) {
                         joystickPointerId = pointerId
                         updateJoystickPosition(x - jBaseX, y - jBaseY, jBaseRadius)
                         performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     } else {
-                        // Check standard buttons
                         findButtonAt(x, y)?.let { button ->
                             activePointerMap[pointerId] = button
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -247,7 +403,7 @@ class ControllerCanvasView @JvmOverloads constructor(
                         val x = event.getX(i)
                         val y = event.getY(i)
 
-                        if (pId == joystickPointerId) {
+                        if (pId == joystickPointerId && activePreset.hasAnalogStick) {
                             updateJoystickPosition(x - jBaseX, y - jBaseY, jBaseRadius)
                             changed = true
                         } else {
@@ -297,11 +453,6 @@ class ControllerCanvasView @JvmOverloads constructor(
         return true
     }
 
-    /**
-     * Maps 360-degree analog drag to 8 directional sectors:
-     * - Cardinals: Up, Down, Left, Right
-     * - Diagonals: Up-Left, Up-Right, Down-Left, Down-Right
-     */
     private fun updateJoystickPosition(dx: Float, dy: Float, maxRadius: Float) {
         val distance = hypot(dx, dy)
         val clampedDistance = min(distance, maxRadius)
@@ -316,58 +467,51 @@ class ControllerCanvasView @JvmOverloads constructor(
 
         activeJoystickKeys.clear()
 
-        // 25% deadzone for neutral position
         val deadzone = maxRadius * 0.25f
         if (distance >= deadzone) {
-            // Angle in degrees from -180 to +180
             val angleDeg = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
 
-            // 8 Sectors (each sector 45 degrees):
-            // Up-Left: -157.5° to -112.5°
-            // Up: -112.5° to -67.5°
-            // Up-Right: -67.5° to -22.5°
-            // Right: -22.5° to +22.5°
-            // Down-Right: +22.5° to +67.5°
-            // Down: +67.5° to +112.5°
-            // Down-Left: +112.5° to +157.5°
-            // Left: abs(angle) > 157.5°
+            val kUp = activePreset.joystickKeyUp
+            val kDown = activePreset.joystickKeyDown
+            val kLeft = activePreset.joystickKeyLeft
+            val kRight = activePreset.joystickKeyRight
 
             when {
                 angleDeg in -157.5f..-112.5f -> {
-                    // DIAGONAL: UP + LEFT (Cover Drive / Off-side advance)
-                    activeJoystickKeys.add(HidConsts.KEY_UP_ARROW)
-                    activeJoystickKeys.add(HidConsts.KEY_LEFT_ARROW)
+                    // UP + LEFT
+                    activeJoystickKeys.add(kUp)
+                    activeJoystickKeys.add(kLeft)
                 }
                 angleDeg in -112.5f..-67.5f -> {
-                    // STRAIGHT: UP
-                    activeJoystickKeys.add(HidConsts.KEY_UP_ARROW)
+                    // UP
+                    activeJoystickKeys.add(kUp)
                 }
                 angleDeg in -67.5f..-22.5f -> {
-                    // DIAGONAL: UP + RIGHT (On Drive / Midwicket loft)
-                    activeJoystickKeys.add(HidConsts.KEY_UP_ARROW)
-                    activeJoystickKeys.add(HidConsts.KEY_RIGHT_ARROW)
+                    // UP + RIGHT
+                    activeJoystickKeys.add(kUp)
+                    activeJoystickKeys.add(kRight)
                 }
                 angleDeg in -22.5f..22.5f -> {
-                    // STRAIGHT: RIGHT
-                    activeJoystickKeys.add(HidConsts.KEY_RIGHT_ARROW)
+                    // RIGHT
+                    activeJoystickKeys.add(kRight)
                 }
                 angleDeg in 22.5f..67.5f -> {
-                    // DIAGONAL: DOWN + RIGHT (Leg Glance / Fine Leg / Hook)
-                    activeJoystickKeys.add(HidConsts.KEY_DOWN_ARROW)
-                    activeJoystickKeys.add(HidConsts.KEY_RIGHT_ARROW)
+                    // DOWN + RIGHT
+                    activeJoystickKeys.add(kDown)
+                    activeJoystickKeys.add(kRight)
                 }
                 angleDeg in 67.5f..112.5f -> {
-                    // STRAIGHT: DOWN
-                    activeJoystickKeys.add(HidConsts.KEY_DOWN_ARROW)
+                    // DOWN
+                    activeJoystickKeys.add(kDown)
                 }
                 angleDeg in 112.5f..157.5f -> {
-                    // DIAGONAL: DOWN + LEFT (Late Cut / Backward Point)
-                    activeJoystickKeys.add(HidConsts.KEY_DOWN_ARROW)
-                    activeJoystickKeys.add(HidConsts.KEY_LEFT_ARROW)
+                    // DOWN + LEFT
+                    activeJoystickKeys.add(kDown)
+                    activeJoystickKeys.add(kLeft)
                 }
                 else -> {
-                    // STRAIGHT: LEFT
-                    activeJoystickKeys.add(HidConsts.KEY_LEFT_ARROW)
+                    // LEFT
+                    activeJoystickKeys.add(kLeft)
                 }
             }
         }
@@ -379,22 +523,28 @@ class ControllerCanvasView @JvmOverloads constructor(
         val viewHeight = height.toFloat()
         if (viewWidth <= 0 || viewHeight <= 0) return null
 
-        for (btn in buttons) {
+        var closestBtn: ControllerButton? = null
+        var minDistance = Float.MAX_VALUE
+
+        for (btn in activePreset.buttons) {
             val cx = btn.xPercent * viewWidth
             val cy = btn.yPercent * viewHeight
-            val radius = dpToPx(btn.radiusDp) * 1.25f
-            if (hypot(x - cx, y - cy) <= radius) {
-                return btn
+            val radius = dpToPx(btn.radiusDp) * (if (isEditMode) 1.5f else 1.3f)
+            val dist = hypot(x - cx, y - cy)
+            if (dist <= radius && dist < minDistance) {
+                minDistance = dist
+                closestBtn = btn
             }
         }
-        return null
+        return closestBtn
     }
 
     private fun dispatchHidUpdate() {
+        if (isEditMode) return
+
         var modifierMask: Byte = 0
         val pressedKeys = HashSet<Byte>()
 
-        // 1. Collect standard buttons
         for (btn in activePointerMap.values) {
             if (btn.isModifier) {
                 modifierMask = (modifierMask.toInt() or btn.modifierMask.toInt()).toByte()
@@ -403,10 +553,66 @@ class ControllerCanvasView @JvmOverloads constructor(
             }
         }
 
-        // 2. Collect 8-way joystick directional keys (Up, Down, Left, Right or simultaneous diagonals!)
         pressedKeys.addAll(activeJoystickKeys)
-
         onStateChanged?.invoke(modifierMask, pressedKeys)
+    }
+
+    // ==========================================
+    // Persistence: Save / Load Custom Positions
+    // ==========================================
+    fun saveCustomPositions() {
+        val editor = prefs.edit()
+        val prefix = activePreset.id
+
+        for (btn in activePreset.buttons) {
+            editor.putFloat("${prefix}_${btn.id}_x", btn.xPercent)
+            editor.putFloat("${prefix}_${btn.id}_y", btn.yPercent)
+        }
+
+        if (activePreset.hasAnalogStick) {
+            editor.putFloat("${prefix}_joystick_x", activePreset.joystickXPercent)
+            editor.putFloat("${prefix}_joystick_y", activePreset.joystickYPercent)
+        }
+
+        editor.apply()
+    }
+
+    private fun loadCustomPositions() {
+        val prefix = activePreset.id
+
+        for (btn in activePreset.buttons) {
+            val savedX = prefs.getFloat("${prefix}_${btn.id}_x", btn.defaultXPercent)
+            val savedY = prefs.getFloat("${prefix}_${btn.id}_y", btn.defaultYPercent)
+            btn.xPercent = savedX
+            btn.yPercent = savedY
+        }
+
+        if (activePreset.hasAnalogStick) {
+            activePreset.joystickXPercent = prefs.getFloat("${prefix}_joystick_x", activePreset.defaultJoystickX)
+            activePreset.joystickYPercent = prefs.getFloat("${prefix}_joystick_y", activePreset.defaultJoystickY)
+        }
+    }
+
+    fun resetToDefaults() {
+        val editor = prefs.edit()
+        val prefix = activePreset.id
+
+        for (btn in activePreset.buttons) {
+            btn.xPercent = btn.defaultXPercent
+            btn.yPercent = btn.defaultYPercent
+            editor.remove("${prefix}_${btn.id}_x")
+            editor.remove("${prefix}_${btn.id}_y")
+        }
+
+        if (activePreset.hasAnalogStick) {
+            activePreset.joystickXPercent = activePreset.defaultJoystickX
+            activePreset.joystickYPercent = activePreset.defaultJoystickY
+            editor.remove("${prefix}_joystick_x")
+            editor.remove("${prefix}_joystick_y")
+        }
+
+        editor.apply()
+        postInvalidate()
     }
 
     private fun dpToPx(dp: Float): Float = dp * resources.displayMetrics.density
