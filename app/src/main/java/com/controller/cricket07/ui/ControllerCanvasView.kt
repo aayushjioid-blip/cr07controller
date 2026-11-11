@@ -12,11 +12,12 @@ import android.view.View
 import com.controller.cricket07.model.ControllerButton
 import com.controller.cricket07.model.ControllerPreset
 import com.controller.cricket07.model.PresetRepository
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.hypot
 
 /**
  * Pure AMOLED Black Surface with floating semi-transparent circular buttons.
- * Implements low-latency multi-touch pointer tracking.
+ * Thread-safe multi-touch pointer tracking.
  */
 class ControllerCanvasView @JvmOverloads constructor(
     context: Context,
@@ -26,10 +27,11 @@ class ControllerCanvasView @JvmOverloads constructor(
 
     private var activePreset: ControllerPreset = PresetRepository.CRICKET_07_PRESET
 
-    private val activePointerMap = HashMap<Int, ControllerButton>()
+    // Thread-safe pointer tracking
+    private val activePointerMap = ConcurrentHashMap<Int, ControllerButton>()
 
     private val buttonNormalPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(40, 255, 255, 255)
+        color = Color.argb(45, 255, 255, 255)
         style = Paint.Style.FILL
     }
 
@@ -53,14 +55,14 @@ class ControllerCanvasView @JvmOverloads constructor(
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
-        textSize = 42f
+        textSize = 40f
         isFakeBoldText = true
     }
 
     private val subLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(160, 200, 200, 200)
         textAlign = Paint.Align.CENTER
-        textSize = 20f
+        textSize = 18f
     }
 
     var onStateChanged: ((modifierMask: Byte, pressedKeys: Set<Byte>) -> Unit)? = null
@@ -68,7 +70,7 @@ class ControllerCanvasView @JvmOverloads constructor(
     fun setPreset(preset: ControllerPreset) {
         activePreset = preset
         activePointerMap.clear()
-        invalidate()
+        postInvalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -77,13 +79,16 @@ class ControllerCanvasView @JvmOverloads constructor(
 
         val viewWidth = width.toFloat()
         val viewHeight = height.toFloat()
+        if (viewWidth <= 0 || viewHeight <= 0) return
+
+        val pressedSet = activePointerMap.values.map { it.id }.toSet()
 
         for (btn in activePreset.buttons) {
             val cx = btn.xPercent * viewWidth
             val cy = btn.yPercent * viewHeight
             val radius = dpToPx(btn.radiusDp)
 
-            val isPressed = activePointerMap.values.any { it.id == btn.id }
+            val isPressed = pressedSet.contains(btn.id)
 
             canvas.drawCircle(cx, cy, radius, if (isPressed) buttonPressedPaint else buttonNormalPaint)
             canvas.drawCircle(cx, cy, radius, if (isPressed) borderPressedPaint else borderNormalPaint)
@@ -99,59 +104,63 @@ class ControllerCanvasView @JvmOverloads constructor(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        val actionMasked = event.actionMasked
-        val actionIndex = event.actionIndex
+        try {
+            val actionMasked = event.actionMasked
+            val actionIndex = event.actionIndex
 
-        when (actionMasked) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                val pointerId = event.getPointerId(actionIndex)
-                val x = event.getX(actionIndex)
-                val y = event.getY(actionIndex)
-                findButtonAt(x, y)?.let { button ->
-                    activePointerMap[pointerId] = button
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    dispatchHidUpdate()
-                    invalidate()
-                }
-            }
-
-            MotionEvent.ACTION_MOVE -> {
-                var changed = false
-                for (i in 0 until event.pointerCount) {
-                    val pointerId = event.getPointerId(i)
-                    val x = event.getX(i)
-                    val y = event.getY(i)
-                    val currentButton = activePointerMap[pointerId]
-                    val newButton = findButtonAt(x, y)
-
-                    if (currentButton != newButton) {
-                        if (newButton != null) {
-                            activePointerMap[pointerId] = newButton
-                        } else {
-                            activePointerMap.remove(pointerId)
-                        }
-                        changed = true
+            when (actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                    val pointerId = event.getPointerId(actionIndex)
+                    val x = event.getX(actionIndex)
+                    val y = event.getY(actionIndex)
+                    findButtonAt(x, y)?.let { button ->
+                        activePointerMap[pointerId] = button
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        dispatchHidUpdate()
+                        postInvalidate()
                     }
                 }
-                if (changed) {
+
+                MotionEvent.ACTION_MOVE -> {
+                    var changed = false
+                    for (i in 0 until event.pointerCount) {
+                        val pointerId = event.getPointerId(i)
+                        val x = event.getX(i)
+                        val y = event.getY(i)
+                        val currentButton = activePointerMap[pointerId]
+                        val newButton = findButtonAt(x, y)
+
+                        if (currentButton != newButton) {
+                            if (newButton != null) {
+                                activePointerMap[pointerId] = newButton
+                            } else {
+                                activePointerMap.remove(pointerId)
+                            }
+                            changed = true
+                        }
+                    }
+                    if (changed) {
+                        dispatchHidUpdate()
+                        postInvalidate()
+                    }
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                    val pointerId = event.getPointerId(actionIndex)
+                    if (activePointerMap.remove(pointerId) != null) {
+                        dispatchHidUpdate()
+                        postInvalidate()
+                    }
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+                    activePointerMap.clear()
                     dispatchHidUpdate()
-                    invalidate()
+                    postInvalidate()
                 }
             }
-
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
-                val pointerId = event.getPointerId(actionIndex)
-                if (activePointerMap.remove(pointerId) != null) {
-                    dispatchHidUpdate()
-                    invalidate()
-                }
-            }
-
-            MotionEvent.ACTION_CANCEL -> {
-                activePointerMap.clear()
-                dispatchHidUpdate()
-                invalidate()
-            }
+        } catch (_: Exception) {
+            // Guard against rare pointer-index out-of-range edge cases
         }
         return true
     }
@@ -159,6 +168,7 @@ class ControllerCanvasView @JvmOverloads constructor(
     private fun findButtonAt(x: Float, y: Float): ControllerButton? {
         val viewWidth = width.toFloat()
         val viewHeight = height.toFloat()
+        if (viewWidth <= 0 || viewHeight <= 0) return null
 
         for (btn in activePreset.buttons) {
             val cx = btn.xPercent * viewWidth
