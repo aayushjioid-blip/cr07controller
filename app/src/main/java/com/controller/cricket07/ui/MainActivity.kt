@@ -5,7 +5,6 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothHidDevice
-import android.bluetooth.BluetoothHidDeviceAppQosSettings
 import android.bluetooth.BluetoothHidDeviceAppSdpSettings
 import android.bluetooth.BluetoothProfile
 import android.content.Intent
@@ -13,11 +12,14 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.WindowManager
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -49,7 +51,9 @@ class MainActivity : AppCompatActivity() {
     private var hidDevice: BluetoothHidDevice? = null
     private var connectedHostDevice: BluetoothDevice? = null
     private val executor = Executors.newSingleThreadExecutor()
-    private var registrationAttempt = 0
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private var isRegistered = false
 
     private val serviceListener = object : BluetoothProfile.ServiceListener {
         override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
@@ -57,7 +61,9 @@ class MainActivity : AppCompatActivity() {
                 try {
                     hidDevice = proxy as? BluetoothHidDevice
                     if (hidDevice != null) {
-                        registerHidApp()
+                        Log.d(TAG, "HID Device proxy obtained. Registering app...")
+                        // Small delay to allow proxy binding to stabilize
+                        mainHandler.postDelayed({ registerHidApp() }, 300)
                     } else {
                         updateStatus("Device does not support Bluetooth HID Device profile", false)
                     }
@@ -72,6 +78,7 @@ class MainActivity : AppCompatActivity() {
             if (profile == BluetoothProfile.HID_DEVICE) {
                 hidDevice = null
                 connectedHostDevice = null
+                isRegistered = false
                 updateStatus("Bluetooth HID disconnected", false)
             }
         }
@@ -79,36 +86,49 @@ class MainActivity : AppCompatActivity() {
 
     private val hidCallback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
+            Log.d(TAG, "onAppStatusChanged: registered = $registered")
+            isRegistered = registered
+
             runOnUiThread {
                 if (registered) {
-                    updateStatus("READY TO PAIR! Connect in Windows/Mac Bluetooth settings", true)
-                    requestDiscoverable()
-                } else {
-                    if (registrationAttempt < 2) {
-                        registrationAttempt++
-                        updateStatus("Retrying HID registration (Attempt $registrationAttempt)...", false)
-                        registerHidAppFallback()
+                    val bonded = getBondedDevices()
+                    if (bonded.isNotEmpty()) {
+                        // Attempt automatic connection to first bonded laptop/PC
+                        val firstTarget = bonded.first()
+                        val targetName = getDeviceName(firstTarget)
+                        updateStatus("REGISTERED! Connecting to $targetName...", false)
+                        connectToDevice(firstTarget)
                     } else {
-                        updateStatus("Registration Pending. Tap here to retry or re-enable Bluetooth", false)
+                        updateStatus("REGISTERED! Pair in Windows Bluetooth Settings (Tap here)", true)
+                        requestDiscoverable()
                     }
+                } else {
+                    updateStatus("HID Registration Pending. Tap here to connect or retry", false)
                 }
             }
         }
 
         override fun onConnectionStateChanged(device: BluetoothDevice?, state: Int) {
+            val devName = getDeviceName(device)
+            Log.d(TAG, "onConnectionStateChanged: $devName -> state $state")
+
             runOnUiThread {
                 when (state) {
                     BluetoothProfile.STATE_CONNECTED -> {
                         connectedHostDevice = device
-                        val name = try { device?.name ?: "PC / Mac" } catch (_: Exception) { "PC / Mac" }
-                        updateStatus("CONNECTED: $name", true)
+                        updateStatus("CONNECTED: $devName (Ready to Play)", true)
+                        Toast.makeText(this@MainActivity, "Connected to $devName", Toast.LENGTH_SHORT).show()
+                    }
+                    BluetoothProfile.STATE_CONNECTING -> {
+                        updateStatus("Connecting to $devName...", false)
+                    }
+                    BluetoothProfile.STATE_DISCONNECTING -> {
+                        updateStatus("Disconnecting from $devName...", false)
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
                         connectedHostDevice = null
-                        updateStatus("Disconnected. Ready to pair.", false)
+                        updateStatus("Disconnected. Tap here to reconnect to $devName", false)
                     }
-                    BluetoothProfile.STATE_CONNECTING -> updateStatus("Connecting to host...", false)
-                    BluetoothProfile.STATE_DISCONNECTING -> updateStatus("Disconnecting...", false)
                 }
             }
         }
@@ -163,9 +183,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         statusText.setOnClickListener {
-            registrationAttempt = 0
-            setupBluetoothHid()
-            requestDiscoverable()
+            showDeviceConnectionDialog()
         }
 
         checkPermissionsAndStart()
@@ -207,7 +225,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         try {
-            updateStatus("Registering HID Keyboard...", false)
+            updateStatus("Initializing Bluetooth HID Keyboard...", false)
             val success = adapter.getProfileProxy(
                 applicationContext,
                 serviceListener,
@@ -226,63 +244,89 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("MissingPermission")
     private fun registerHidApp() {
         val hid = hidDevice ?: return
-        try {
-            // Unregister any previous stale instance
-            try { hid.unregisterApp() } catch (_: Exception) {}
+        if (isRegistered) return
 
-            // Correct SUBCLASS1_KEYBOARD for keyboard-only report descriptor
+        try {
             val sdpSettings = BluetoothHidDeviceAppSdpSettings(
                 "Cricket 07 Controller",
-                "OnePlus 13R Bluetooth Keyboard",
+                "OnePlus 13R Keyboard Gamepad",
                 "OnePlus",
                 BluetoothHidDevice.SUBCLASS1_KEYBOARD,
                 HidDescriptor.KEYBOARD_DESCRIPTOR
             )
 
-            val qos = BluetoothHidDeviceAppQosSettings(
-                BluetoothHidDeviceAppQosSettings.SERVICE_BEST_EFFORT,
-                800,
-                9,
-                0,
-                11250,
-                BluetoothHidDeviceAppQosSettings.MAX
-            )
-
+            // null inQos and outQos allows Fluoride daemon to use standard system defaults
             hid.registerApp(
                 sdpSettings,
-                qos,
-                qos,
+                null,
+                null,
                 executor,
                 hidCallback
             )
         } catch (e: Exception) {
             Log.e(TAG, "Error in registerApp", e)
-            registerHidAppFallback()
+            updateStatus("Register error: ${e.message}", false)
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun registerHidAppFallback() {
-        val hid = hidDevice ?: return
-        try {
-            val sdpSettings = BluetoothHidDeviceAppSdpSettings(
-                "Cricket 07 Controller",
-                "OnePlus 13R Keyboard",
-                "OnePlus",
-                BluetoothHidDevice.SUBCLASS1_NONE,
-                HidDescriptor.KEYBOARD_DESCRIPTOR
-            )
+    fun connectToDevice(device: BluetoothDevice) {
+        val hid = hidDevice
+        if (hid == null) {
+            Toast.makeText(this, "HID Service not ready yet", Toast.LENGTH_SHORT).show()
+            return
+        }
 
-            hid.registerApp(
-                sdpSettings,
-                null,
-                null,
-                executor,
-                hidCallback
-            )
+        val devName = getDeviceName(device)
+        updateStatus("Connecting to $devName...", false)
+        try {
+            val success = hid.connect(device)
+            Log.d(TAG, "hid.connect($devName) returned $success")
+            if (!success) {
+                Toast.makeText(this, "Connection request queued for $devName", Toast.LENGTH_SHORT).show()
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Error in registerHidAppFallback", e)
-            updateStatus("Registration error: ${e.message}", false)
+            Log.e(TAG, "Error connecting to $devName", e)
+            updateStatus("Connection error: ${e.message}", false)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun showDeviceConnectionDialog() {
+        val bonded = getBondedDevices()
+        val deviceNames = bonded.map { getDeviceName(it) }.toMutableList()
+        deviceNames.add("➕ Make Phone Discoverable (Pair New PC)")
+
+        val builder = AlertDialog.Builder(this)
+        builder.setTitle("Bluetooth HID Connection")
+        builder.setItems(deviceNames.toTypedArray()) { _, which ->
+            if (which < bonded.size) {
+                val selectedDevice = bonded[which]
+                connectToDevice(selectedDevice)
+            } else {
+                requestDiscoverable()
+                registerHidApp()
+            }
+        }
+        builder.setNegativeButton("Cancel", null)
+        builder.show()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun getBondedDevices(): List<BluetoothDevice> {
+        return try {
+            bluetoothAdapter?.bondedDevices?.toList() ?: emptyList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun getDeviceName(device: BluetoothDevice?): String {
+        return try {
+            device?.name ?: device?.address ?: "PC / Laptop"
+        } catch (_: Exception) {
+            "PC / Laptop"
         }
     }
 
@@ -316,7 +360,7 @@ class MainActivity : AppCompatActivity() {
                 putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
             }
             startActivity(intent)
-            Toast.makeText(this, "Phone is now discoverable for 5 minutes", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Phone is discoverable for 5 minutes", Toast.LENGTH_SHORT).show()
         } catch (_: Exception) {}
     }
 
