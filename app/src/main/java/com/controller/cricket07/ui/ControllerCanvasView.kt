@@ -11,6 +11,7 @@ import android.graphics.Path
 import android.util.AttributeSet
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import com.controller.cricket07.model.ControllerButton
 import com.controller.cricket07.model.ControllerPreset
@@ -25,7 +26,7 @@ import kotlin.math.min
  * 1. 8-Way 360° Analog Thumbstick Dial (supports full analog axes + cardinal/diagonal shots)
  * 2. Multi-touch floating buttons matching EA Sports Cricket 07 and Gamepad configurations
  * 3. Simultaneous Gamepad DirectInput reporting & Boot Keyboard reporting
- * 4. Interactive Drag-and-Drop layout editor with persistent coordinates in SharedPreferences
+ * 4. Interactive Drag-and-Drop + Pinch-to-Resize layout editor with persistent coordinates in SharedPreferences
  */
 class ControllerCanvasView @JvmOverloads constructor(
     context: Context,
@@ -57,13 +58,14 @@ class ControllerCanvasView @JvmOverloads constructor(
             postInvalidate()
         }
 
-    // Drag-and-Drop tracking in Edit Mode
+    // Drag-and-Drop & Pinch-Resize tracking in Edit Mode
     private var draggedButton: ControllerButton? = null
     private var isDraggingJoystick: Boolean = false
     private var editPointerId: Int? = null
 
     // Analog Joystick Configuration
-    private val joystickBaseRadiusDp = 62f
+    var joystickBaseRadiusDp = 62f
+    val defaultJoystickBaseRadiusDp = 62f
     private val joystickKnobRadiusDp = 30f
 
     private var joystickPointerId: Int? = null
@@ -73,6 +75,53 @@ class ControllerCanvasView @JvmOverloads constructor(
     private val activeJoystickKeys = HashSet<Byte>()
 
     private val activePointerMap = ConcurrentHashMap<Int, ControllerButton>()
+
+    // Pinch-to-Resize Detector for Edit Mode
+    private val scaleGestureDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScale(detector: ScaleGestureDetector): Boolean {
+            if (!isEditMode) return false
+            val factor = detector.scaleFactor
+            if (factor <= 0.01f || factor >= 10f) return false
+
+            draggedButton?.let { btn ->
+                val newRadius = (btn.radiusDp * factor).coerceIn(16f, 65f)
+                btn.radiusDp = newRadius
+                postInvalidate()
+                return true
+            }
+
+            if (isDraggingJoystick && activePreset.hasAnalogStick) {
+                joystickBaseRadiusDp = (joystickBaseRadiusDp * factor).coerceIn(40f, 110f)
+                postInvalidate()
+                return true
+            }
+
+            // Target by focus point if not already tracked
+            val fx = detector.focusX
+            val fy = detector.focusY
+            findButtonAt(fx, fy)?.let { btn ->
+                draggedButton = btn
+                val newRadius = (btn.radiusDp * factor).coerceIn(16f, 65f)
+                btn.radiusDp = newRadius
+                postInvalidate()
+                return true
+            }
+
+            if (activePreset.hasAnalogStick) {
+                val jBaseX = activePreset.joystickXPercent * width
+                val jBaseY = activePreset.joystickYPercent * height
+                val jRadius = dpToPx(joystickBaseRadiusDp) * 1.5f
+                if (hypot(fx - jBaseX, fy - jBaseY) <= jRadius) {
+                    isDraggingJoystick = true
+                    joystickBaseRadiusDp = (joystickBaseRadiusDp * factor).coerceIn(40f, 110f)
+                    postInvalidate()
+                    return true
+                }
+            }
+
+            return false
+        }
+    })
 
     // Paints
     private val buttonNormalPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -167,6 +216,7 @@ class ControllerCanvasView @JvmOverloads constructor(
 
     fun setPreset(preset: ControllerPreset) {
         activePreset = preset
+        joystickBaseRadiusDp = defaultJoystickBaseRadiusDp
         loadCustomPositions()
         activePointerMap.clear()
         joystickPointerId = null
@@ -214,8 +264,8 @@ class ControllerCanvasView @JvmOverloads constructor(
                     // Draw alignment crosshairs in Edit Mode
                     canvas.drawLine(0f, cy, viewWidth, cy, editGuidePaint)
                     canvas.drawLine(cx, 0f, cx, viewHeight, editGuidePaint)
-                    // Draw coordinates indicator
-                    val coordText = "${(btn.xPercent * 100).toInt()}%, ${(btn.yPercent * 100).toInt()}%"
+                    // Draw coordinates and size indicator
+                    val coordText = "${(btn.xPercent * 100).toInt()}%, ${(btn.yPercent * 100).toInt()}% • Size: ${btn.radiusDp.toInt()}dp"
                     canvas.drawText(coordText, cx, cy + radius + dpToPx(16f), editCoordPaint)
                 }
             } else {
@@ -248,7 +298,7 @@ class ControllerCanvasView @JvmOverloads constructor(
             if (isDraggingJoystick) {
                 canvas.drawLine(0f, baseY, viewWidth, baseY, editGuidePaint)
                 canvas.drawLine(baseX, 0f, baseX, viewHeight, editGuidePaint)
-                val coordText = "DIAL: ${(activePreset.joystickXPercent * 100).toInt()}%, ${(activePreset.joystickYPercent * 100).toInt()}%"
+                val coordText = "DIAL: ${(activePreset.joystickXPercent * 100).toInt()}%, ${(activePreset.joystickYPercent * 100).toInt()}% • Size: ${joystickBaseRadiusDp.toInt()}dp"
                 canvas.drawText(coordText, baseX, baseY + baseRadius + dpToPx(20f), editCoordPaint)
             }
         } else {
@@ -302,9 +352,16 @@ class ControllerCanvasView @JvmOverloads constructor(
             val viewHeight = height.toFloat()
 
             // ==========================================
-            // EDIT MODE: Smooth Drag & Drop Repositioning
+            // EDIT MODE: Smooth Drag & Drop Repositioning & Pinch-to-Resize
             // ==========================================
             if (isEditMode) {
+                // Route to pinch-to-resize gesture detector
+                scaleGestureDetector.onTouchEvent(event)
+
+                if (scaleGestureDetector.isInProgress || event.pointerCount > 1) {
+                    return true
+                }
+
                 when (actionMasked) {
                     MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                         if (editPointerId == null) {
@@ -595,7 +652,7 @@ class ControllerCanvasView @JvmOverloads constructor(
     }
 
     // ==========================================
-    // Persistence: Save / Load Custom Positions
+    // Persistence: Save / Load Custom Positions & Sizes
     // ==========================================
     fun saveCustomPositions() {
         val editor = prefs.edit()
@@ -604,11 +661,13 @@ class ControllerCanvasView @JvmOverloads constructor(
         for (btn in activePreset.buttons) {
             editor.putFloat("${prefix}_${btn.id}_x", btn.xPercent)
             editor.putFloat("${prefix}_${btn.id}_y", btn.yPercent)
+            editor.putFloat("${prefix}_${btn.id}_radius", btn.radiusDp)
         }
 
         if (activePreset.hasAnalogStick) {
             editor.putFloat("${prefix}_joystick_x", activePreset.joystickXPercent)
             editor.putFloat("${prefix}_joystick_y", activePreset.joystickYPercent)
+            editor.putFloat("${prefix}_joystick_radius", joystickBaseRadiusDp)
         }
 
         editor.apply()
@@ -620,13 +679,16 @@ class ControllerCanvasView @JvmOverloads constructor(
         for (btn in activePreset.buttons) {
             val savedX = prefs.getFloat("${prefix}_${btn.id}_x", btn.defaultXPercent)
             val savedY = prefs.getFloat("${prefix}_${btn.id}_y", btn.defaultYPercent)
+            val savedRadius = prefs.getFloat("${prefix}_${btn.id}_radius", btn.defaultRadiusDp)
             btn.xPercent = savedX
             btn.yPercent = savedY
+            btn.radiusDp = savedRadius
         }
 
         if (activePreset.hasAnalogStick) {
             activePreset.joystickXPercent = prefs.getFloat("${prefix}_joystick_x", activePreset.defaultJoystickX)
             activePreset.joystickYPercent = prefs.getFloat("${prefix}_joystick_y", activePreset.defaultJoystickY)
+            joystickBaseRadiusDp = prefs.getFloat("${prefix}_joystick_radius", defaultJoystickBaseRadiusDp)
         }
     }
 
@@ -637,15 +699,19 @@ class ControllerCanvasView @JvmOverloads constructor(
         for (btn in activePreset.buttons) {
             btn.xPercent = btn.defaultXPercent
             btn.yPercent = btn.defaultYPercent
+            btn.radiusDp = btn.defaultRadiusDp
             editor.remove("${prefix}_${btn.id}_x")
             editor.remove("${prefix}_${btn.id}_y")
+            editor.remove("${prefix}_${btn.id}_radius")
         }
 
         if (activePreset.hasAnalogStick) {
             activePreset.joystickXPercent = activePreset.defaultJoystickX
             activePreset.joystickYPercent = activePreset.defaultJoystickY
+            joystickBaseRadiusDp = defaultJoystickBaseRadiusDp
             editor.remove("${prefix}_joystick_x")
             editor.remove("${prefix}_joystick_y")
+            editor.remove("${prefix}_joystick_radius")
         }
 
         editor.apply()

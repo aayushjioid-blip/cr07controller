@@ -125,7 +125,7 @@ class BluetoothHidController(private val context: Context) {
             "Cricket 07 Controller",
             "OnePlus 13R Wireless HID Gamepad",
             "OnePlus",
-            BluetoothHidDevice.SUBCLASS1_COMBO,
+            BluetoothHidDevice.SUBCLASS2_GAMEPAD,
             HidDescriptor.KEYBOARD_DESCRIPTOR
         )
 
@@ -159,22 +159,16 @@ class BluetoothHidController(private val context: Context) {
     fun releaseAllKeys(): Boolean {
         val device = connectedHostDevice ?: return false
         val hid = hidDevice ?: return false
-        val emptyReport = ByteArray(8)
-        return hid.sendReport(device, HidConsts.REPORT_ID_KEYBOARD.toInt(), emptyReport)
-    }
-
-    fun destroy() {
-        try {
-            hidDevice?.unregisterApp()
-            if (hidDevice != null && bluetoothAdapter != null) {
-                bluetoothAdapter.closeProfileProxy(BluetoothProfile.HID_DEVICE, hidDevice)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error cleaning up HID service", e)
-        }
+        return hid.sendReport(device, HidConsts.REPORT_ID_KEYBOARD.toInt(), ByteArray(8))
     }
 
     private fun notifyStatus(message: String, isConnected: Boolean) {
         onStatusChangedListener?.invoke(message, isConnected)
+    }
+
+    fun close() {
+        if (hidDevice != null && bluetoothAdapter != null) {
+            bluetoothAdapter.closeProfileProxy(BluetoothProfile.HID_DEVICE, hidDevice)
+        }
     }
 }

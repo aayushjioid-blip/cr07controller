@@ -3,6 +3,7 @@ package com.controller.cricket07.ui
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothHidDevice
 import android.bluetooth.BluetoothHidDeviceAppSdpSettings
@@ -43,6 +44,8 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS_SETTINGS = "controller_settings"
         private const val KEY_ACTIVE_PRESET = "active_preset_id"
         private const val KEY_IS_GAMEPAD_MODE = "is_gamepad_mode"
+        private const val KEY_IS_MAC_HOST = "is_mac_host"
+        private const val KEY_LAST_CONNECTED_DEVICE_MAC = "last_connected_device_mac"
     }
 
     private lateinit var canvasView: ControllerCanvasView
@@ -60,6 +63,10 @@ class MainActivity : AppCompatActivity() {
 
     // Mode state: Default to true (Controller / Gamepad Mode for Multiplayer Player 2)
     private var isGamepadMode: Boolean = true
+    // Host Profile: false = Windows (Default, verified v2.3.0 parity), true = Mac (Collection 1 Gamepad for macOS GCController)
+    private var isMacHost: Boolean = false
+
+    private var isPendingReRegistration: Boolean = false
 
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         try {
@@ -83,7 +90,7 @@ class MainActivity : AppCompatActivity() {
                     hidDevice = proxy as? BluetoothHidDevice
                     if (hidDevice != null) {
                         Log.d(TAG, "HID Device proxy obtained. Registering app...")
-                        mainHandler.postDelayed({ registerHidApp() }, 300)
+                        mainHandler.postDelayed({ registerHidApp() }, 200)
                     } else {
                         updateStatus("Device does not support Bluetooth HID Device profile", false)
                     }
@@ -99,28 +106,68 @@ class MainActivity : AppCompatActivity() {
                 hidDevice = null
                 connectedHostDevice = null
                 isRegistered = false
-                updateStatus("Bluetooth HID disconnected", false)
+                updateStatus("Bluetooth HID service disconnected", false)
             }
         }
     }
 
     private val hidCallback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
-            Log.d(TAG, "onAppStatusChanged: registered = $registered")
+            Log.d(TAG, "onAppStatusChanged: registered = $registered, plugged = ${pluggedDevice?.name ?: pluggedDevice?.address}")
             isRegistered = registered
+
+            if (!registered && isPendingReRegistration) {
+                isPendingReRegistration = false
+                mainHandler.postDelayed({ registerHidApp() }, 300)
+                return
+            }
 
             runOnUiThread {
                 if (registered) {
-                    val bonded = getBondedDevices()
-                    if (bonded.isNotEmpty()) {
-                        val firstTarget = bonded.first()
-                        val targetName = getDeviceName(firstTarget)
-                        updateStatus("REGISTERED! Connecting to $targetName...", false)
-                        connectToDevice(firstTarget)
-                    } else {
-                        updateStatus("REGISTERED! Pair in Windows Bluetooth Settings", true)
-                        requestDiscoverable()
+                    // Priority 1: Check if a host was already plugged when registration completed
+                    if (pluggedDevice != null) {
+                        handleHostConnected(pluggedDevice)
+                        return@runOnUiThread
                     }
+
+                    // Priority 2: Check getConnectedDevices()
+                    val currentlyConnected = getConnectedHidDevices()
+                    if (currentlyConnected.isNotEmpty()) {
+                        handleHostConnected(currentlyConnected.first())
+                        return@runOnUiThread
+                    }
+
+                    // Priority 3: Reconnect to last successfully connected host if bonded
+                    val settingsPrefs = getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
+                    val lastMac = settingsPrefs.getString(KEY_LAST_CONNECTED_DEVICE_MAC, null)
+                    val bonded = getBondedDevices()
+
+                    if (lastMac != null) {
+                        val lastDevice = bonded.find { it.address.equals(lastMac, ignoreCase = true) }
+                        if (lastDevice != null) {
+                            val hostName = getDeviceName(lastDevice)
+                            updateStatus("Reconnecting to $hostName...", false)
+                            connectToDevice(lastDevice)
+                            return@runOnUiThread
+                        }
+                    }
+
+                    // Priority 4: Look for bonded Computers / Laptops / Macs
+                    val computers = bonded.filter { dev ->
+                        dev.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.COMPUTER
+                    }
+                    if (computers.size == 1) {
+                        val target = computers.first()
+                        val targetName = getDeviceName(target)
+                        updateStatus("Connecting to $targetName...", false)
+                        connectToDevice(target)
+                        return@runOnUiThread
+                    }
+
+                    // Priority 5: Ready to connect or pair
+                    val hostLabel = if (isMacHost) "Mac" else "Windows"
+                    updateStatus("READY TO PAIR! Connect in $hostLabel Bluetooth Settings", true)
+                    requestDiscoverable()
                 } else {
                     updateStatus("HID Registration Pending. Tap to retry", false)
                 }
@@ -134,16 +181,8 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 when (state) {
                     BluetoothProfile.STATE_CONNECTED -> {
-                        connectedHostDevice = device
-                        val modeLabel = if (isGamepadMode) "P-2 Controller" else "P-1 Keyboard"
-                        updateStatus("CONNECTED: $devName ($modeLabel)", true)
-                        Toast.makeText(this@MainActivity, "Connected to $devName as $modeLabel", Toast.LENGTH_SHORT).show()
-
-                        // Send initial neutral report immediately to calibrate Windows DirectInput / joy.cpl
-                        if (isGamepadMode) {
-                            mainHandler.postDelayed({
-                                sendGamepadReport(128.toByte(), 128.toByte(), 8.toByte(), 0)
-                            }, 100)
+                        if (device != null) {
+                            handleHostConnected(device)
                         }
                     }
                     BluetoothProfile.STATE_CONNECTING -> {
@@ -153,8 +192,10 @@ class MainActivity : AppCompatActivity() {
                         updateStatus("Disconnecting from $devName...", false)
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
-                        connectedHostDevice = null
-                        updateStatus("Disconnected. Tap to reconnect to $devName", false)
+                        if (connectedHostDevice?.address == device?.address) {
+                            connectedHostDevice = null
+                            updateStatus("Disconnected. Tap to reconnect to $devName", false)
+                        }
                     }
                 }
             }
@@ -163,17 +204,24 @@ class MainActivity : AppCompatActivity() {
         override fun onGetReport(device: BluetoothDevice?, type: Byte, id: Byte, bufferSize: Int) {
             Log.d(TAG, "onGetReport: type=$type, id=$id, bufferSize=$bufferSize")
             try {
+                val neutralGamepad = byteArrayOf(
+                    128.toByte(), 128.toByte(), 128.toByte(), 128.toByte(),
+                    0x08.toByte(), // Hat Switch: 8 = Released / Centered
+                    0x00.toByte(), 0x00.toByte() // Buttons: 0
+                )
+                val neutralKeyboard = ByteArray(8)
+
                 if (id == HidDescriptor.REPORT_ID_GAMEPAD) {
-                    // Return exact 7-byte neutral Gamepad state to satisfy Windows GET_REPORT handshake
-                    val neutralGamepad = byteArrayOf(
-                        128.toByte(), 128.toByte(), 128.toByte(), 128.toByte(),
-                        0x08.toByte(), // Hat Switch: 8 = Released / Centered
-                        0x00.toByte(), 0x00.toByte() // Buttons: 0
-                    )
                     hidDevice?.replyReport(device, type, id, neutralGamepad)
                 } else if (id == HidDescriptor.REPORT_ID_KEYBOARD) {
-                    val neutralKeyboard = ByteArray(8)
                     hidDevice?.replyReport(device, type, id, neutralKeyboard)
+                } else if (id == 0.toByte()) {
+                    // Host requested without report ID; return according to active mode
+                    if (isGamepadMode) {
+                        hidDevice?.replyReport(device, type, HidDescriptor.REPORT_ID_GAMEPAD, neutralGamepad)
+                    } else {
+                        hidDevice?.replyReport(device, type, HidDescriptor.REPORT_ID_KEYBOARD, neutralKeyboard)
+                    }
                 } else {
                     hidDevice?.reportError(device, BluetoothHidDevice.ERROR_RSP_SUCCESS)
                 }
@@ -192,6 +240,27 @@ class MainActivity : AppCompatActivity() {
             try {
                 hidDevice?.reportError(device, BluetoothHidDevice.ERROR_RSP_SUCCESS)
             } catch (_: Exception) {}
+        }
+    }
+
+    private fun handleHostConnected(device: BluetoothDevice) {
+        connectedHostDevice = device
+        val devName = getDeviceName(device)
+        val modeLabel = if (isGamepadMode) "P-2 Controller" else "P-1 Keyboard"
+        val hostLabel = if (isMacHost) "🍎 Mac" else "🪟 Win"
+
+        // Remember as last successfully connected host
+        val settingsPrefs = getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
+        settingsPrefs.edit().putString(KEY_LAST_CONNECTED_DEVICE_MAC, device.address).apply()
+
+        updateStatus("CONNECTED: $devName ($modeLabel • $hostLabel)", true)
+        Toast.makeText(this@MainActivity, "Connected to $devName as $modeLabel", Toast.LENGTH_SHORT).show()
+
+        // Calibrate host by sending initial neutral state
+        if (isGamepadMode) {
+            mainHandler.postDelayed({
+                sendGamepadReport(128.toByte(), 128.toByte(), 8.toByte(), 0)
+            }, 100)
         }
     }
 
@@ -229,16 +298,15 @@ class MainActivity : AppCompatActivity() {
         btnResetLayout = findViewById(R.id.btn_reset_layout)
         btnSaveLayout = findViewById(R.id.btn_save_layout)
 
-        // Ensure top HUD bars are always on top of canvas and touchable
         topBarNormal.bringToFront()
         topBarEdit.bringToFront()
 
-        // Display detected mobile model, app version, and compatibility
-        tvDeviceInfo.text = "📱 ${DeviceCompatibility.displayName} • ${DeviceCompatibility.APP_VERSION} (P2 Ready)"
+        tvDeviceInfo.text = "📱 ${DeviceCompatibility.displayName} • ${DeviceCompatibility.APP_VERSION} (Multiplayer)"
 
         // Restore saved settings
         val settingsPrefs = getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
         isGamepadMode = settingsPrefs.getBoolean(KEY_IS_GAMEPAD_MODE, true)
+        isMacHost = settingsPrefs.getBoolean(KEY_IS_MAC_HOST, false)
         val savedPresetId = settingsPrefs.getString(KEY_ACTIVE_PRESET, PresetRepository.createCricket07Preset().id)
         val initialPreset = PresetRepository.PRESETS.find { it.id == savedPresetId } ?: PresetRepository.PRESETS.first()
         canvasView.setPreset(initialPreset)
@@ -258,17 +326,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Mode Switcher / Preset dialog
         btnModeToggle.setOnClickListener {
             showModeSelectionDialog()
         }
 
-        // Bluetooth connection dialog
         btnConnectionStatus.setOnClickListener {
             showDeviceConnectionDialog()
         }
 
-        // Edit Layout
         btnEditLayout.setOnClickListener {
             enterEditMode()
         }
@@ -281,7 +346,6 @@ class MainActivity : AppCompatActivity() {
             showResetLayoutDialog()
         }
 
-        // Handle System Back Button
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (canvasView.isEditMode) {
@@ -295,37 +359,79 @@ class MainActivity : AppCompatActivity() {
         checkPermissionsAndStart()
     }
 
+    override fun onResume() {
+        super.onResume()
+        try {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            WindowInsetsControllerCompat(window, window.decorView).let { controller ->
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+                controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } catch (_: Exception) {}
+
+        // Check active connection whenever app resumes into foreground
+        if (hidDevice != null) {
+            if (!isRegistered) {
+                registerHidApp()
+            } else {
+                val connected = getConnectedHidDevices()
+                if (connected.isNotEmpty()) {
+                    handleHostConnected(connected.first())
+                } else if (connectedHostDevice != null) {
+                    val state = hidDevice?.getConnectionState(connectedHostDevice)
+                    if (state != BluetoothProfile.STATE_CONNECTED) {
+                        connectedHostDevice = null
+                        updateStatus("Ready to connect. Tap to connect to PC / Mac", false)
+                    }
+                }
+            }
+        } else {
+            setupBluetoothHid()
+        }
+    }
+
     private fun updateModeUI() {
+        val hostTag = if (isMacHost) "🍎 Mac" else "🪟 Win"
         if (isGamepadMode) {
-            tvActiveModeTitle.text = "🎮 P-2: CONTROLLER (ACTIVE)"
+            tvActiveModeTitle.text = "🎮 P-2: CONTROLLER ($hostTag)"
             tvActiveModeTitle.setTextColor(Color.parseColor("#00E5FF"))
             btnModeToggle.setBackgroundResource(R.drawable.bg_pill_cyan)
         } else {
-            tvActiveModeTitle.text = "⌨️ P-1: KEYBOARD (ACTIVE)"
+            tvActiveModeTitle.text = "⌨️ P-1: KEYBOARD ($hostTag)"
             tvActiveModeTitle.setTextColor(Color.parseColor("#69F0AE"))
             btnModeToggle.setBackgroundResource(R.drawable.bg_pill_green)
         }
         tvActivePresetName.text = "${canvasView.activePreset.name} ▼"
 
         val settingsPrefs = getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
-        settingsPrefs.edit().putBoolean(KEY_IS_GAMEPAD_MODE, isGamepadMode).apply()
+        settingsPrefs.edit()
+            .putBoolean(KEY_IS_GAMEPAD_MODE, isGamepadMode)
+            .putBoolean(KEY_IS_MAC_HOST, isMacHost)
+            .apply()
 
         connectedHostDevice?.let { dev ->
             val devName = getDeviceName(dev)
             val modeLabel = if (isGamepadMode) "P-2 Controller" else "P-1 Keyboard"
-            updateStatus("CONNECTED: $devName ($modeLabel)", true)
+            updateStatus("CONNECTED: $devName ($modeLabel • $hostTag)", true)
         }
     }
 
     private fun showModeSelectionDialog() {
+        val hostProfileTitle = if (isMacHost) {
+            "🖥️ Host Profile: 🍎 Mac (Collection 1 Gamepad - Tap to switch to 🪟 Windows)"
+        } else {
+            "🖥️ Host Profile: 🪟 Windows (DirectInput Default - Tap to switch to 🍎 Mac)"
+        }
+
         val options = arrayOf(
             "🎮 P-2: Game Controller (Player 2 for PC Multiplayer - DirectInput)",
             "⌨️ P-1: PC Keyboard (Solo Play - Direct Keystrokes)",
+            hostProfileTitle,
             "🎨 Switch Button Layout Preset (${canvasView.activePreset.name})"
         )
 
         AlertDialog.Builder(this)
-            .setTitle("Select Player Mode")
+            .setTitle("Select Player & Host Profile")
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> {
@@ -341,12 +447,37 @@ class MainActivity : AppCompatActivity() {
                         Toast.makeText(this, "Active: P-1 PC Keyboard (Solo)", Toast.LENGTH_SHORT).show()
                     }
                     2 -> {
+                        toggleHostProfile()
+                    }
+                    3 -> {
                         showPresetSelectionDialog()
                     }
                 }
             }
             .setNegativeButton("Close", null)
             .show()
+    }
+
+    private fun toggleHostProfile() {
+        isMacHost = !isMacHost
+        val settingsPrefs = getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
+        settingsPrefs.edit().putBoolean(KEY_IS_MAC_HOST, isMacHost).apply()
+        updateModeUI()
+
+        val hostName = if (isMacHost) "🍎 Mac Profile (Collection 1 Gamepad)" else "🪟 Windows Profile (DirectInput Default)"
+        Toast.makeText(this, "Profile: $hostName. Updating HID Service...", Toast.LENGTH_SHORT).show()
+
+        val hid = hidDevice ?: return
+        try {
+            if (isRegistered) {
+                isPendingReRegistration = true
+                hid.unregisterApp()
+            } else {
+                registerHidApp()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error toggling host profile", e)
+        }
     }
 
     private fun showPresetSelectionDialog() {
@@ -375,7 +506,7 @@ class MainActivity : AppCompatActivity() {
         topBarNormal.visibility = View.GONE
         topBarEdit.visibility = View.VISIBLE
         topBarEdit.bringToFront()
-        Toast.makeText(this, "Edit Mode: Drag any button or dial to move", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Edit Mode: Drag to move • Pinch in/out to resize", Toast.LENGTH_SHORT).show()
     }
 
     private fun exitEditMode(save: Boolean) {
@@ -392,7 +523,7 @@ class MainActivity : AppCompatActivity() {
     private fun showResetLayoutDialog() {
         AlertDialog.Builder(this)
             .setTitle("Reset Layout")
-            .setMessage("Reset all buttons and the analog dial to default positions for '${canvasView.activePreset.name}'?")
+            .setMessage("Reset all buttons and the analog dial to default positions and sizes for '${canvasView.activePreset.name}'?")
             .setPositiveButton("Reset") { _, _ ->
                 canvasView.resetToDefaults()
                 Toast.makeText(this, "Reset to defaults", Toast.LENGTH_SHORT).show()
@@ -459,13 +590,15 @@ class MainActivity : AppCompatActivity() {
         if (isRegistered) return
 
         try {
-            // Automatically detect phone name and brand for Windows discovery
+            val descriptor = if (isMacHost) HidDescriptor.MAC_GAMEPAD_DESCRIPTOR else HidDescriptor.WINDOWS_COMPOSITE_DESCRIPTOR
+            val hostLabel = if (isMacHost) "Mac" else "Windows"
+
             val sdpSettings = BluetoothHidDeviceAppSdpSettings(
                 "Cricket 07 Controller",
-                "${DeviceCompatibility.displayName} Controller ${DeviceCompatibility.APP_VERSION}",
+                "${DeviceCompatibility.displayName} Controller ${DeviceCompatibility.APP_VERSION} ($hostLabel)",
                 DeviceCompatibility.manufacturer,
-                BluetoothHidDevice.SUBCLASS2_GAMEPAD,
-                HidDescriptor.COMPOSITE_DESCRIPTOR
+                BluetoothHidDevice.SUBCLASS2_GAMEPAD, // Standard SUBCLASS2_GAMEPAD for 100% Android stack reliability
+                descriptor
             )
 
             hid.registerApp(
@@ -485,17 +618,26 @@ class MainActivity : AppCompatActivity() {
     fun connectToDevice(device: BluetoothDevice) {
         val hid = hidDevice
         if (hid == null) {
-            Toast.makeText(this, "HID Service not ready yet", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "HID Service initializing...", Toast.LENGTH_SHORT).show()
+            setupBluetoothHid()
             return
         }
 
         val devName = getDeviceName(device)
+
+        // Check if device is already connected at the HID profile layer
+        val currentState = hid.getConnectionState(device)
+        if (currentState == BluetoothProfile.STATE_CONNECTED) {
+            handleHostConnected(device)
+            return
+        }
+
         updateStatus("Connecting to $devName...", false)
         try {
             val success = hid.connect(device)
             Log.d(TAG, "hid.connect($devName) returned $success")
             if (!success) {
-                Toast.makeText(this, "Connection request queued for $devName", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Connecting to $devName...", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error connecting to $devName", e)
@@ -506,18 +648,46 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("MissingPermission")
     private fun showDeviceConnectionDialog() {
         val bonded = getBondedDevices()
-        val deviceNames = bonded.map { getDeviceName(it) }.toMutableList()
-        deviceNames.add("➕ Make Phone Discoverable (Pair New PC)")
+        val currentlyConnected = getConnectedHidDevices()
+        val connectedMacs = currentlyConnected.map { it.address }.toSet()
+
+        val items = mutableListOf<String>()
+        val deviceTargets = mutableListOf<BluetoothDevice>()
+
+        for (dev in bonded) {
+            val isDevConnected = connectedMacs.contains(dev.address) || connectedHostDevice?.address == dev.address
+            val isComputer = dev.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.COMPUTER
+            val icon = if (isComputer) "💻" else "📱"
+            val statusTag = if (isDevConnected) " [● CONNECTED]" else ""
+            items.add("$icon ${getDeviceName(dev)}$statusTag")
+            deviceTargets.add(dev)
+        }
+
+        items.add("➕ Make Phone Discoverable (Pair New PC / Mac)")
+        items.add("↺ Re-register Bluetooth HID Service")
 
         val builder = AlertDialog.Builder(this)
-        builder.setTitle("Cricket 07 Controller ${DeviceCompatibility.APP_VERSION}\n(${DeviceCompatibility.fullDeviceInfo})")
-        builder.setItems(deviceNames.toTypedArray()) { _, which ->
-            if (which < bonded.size) {
-                val selectedDevice = bonded[which]
-                connectToDevice(selectedDevice)
-            } else {
-                requestDiscoverable()
-                registerHidApp()
+        builder.setTitle("Bluetooth HID Connection (${DeviceCompatibility.displayName})")
+        builder.setItems(items.toTypedArray()) { _, which ->
+            when {
+                which < deviceTargets.size -> {
+                    val selectedDevice = deviceTargets[which]
+                    connectToDevice(selectedDevice)
+                }
+                which == deviceTargets.size -> {
+                    requestDiscoverable()
+                }
+                which == deviceTargets.size + 1 -> {
+                    try {
+                        hidDevice?.unregisterApp()
+                        isRegistered = false
+                        connectedHostDevice = null
+                        mainHandler.postDelayed({ registerHidApp() }, 400)
+                        Toast.makeText(this, "Resetting Bluetooth HID...", Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error resetting HID", e)
+                    }
+                }
             }
         }
         builder.setNegativeButton("Cancel", null)
@@ -534,20 +704,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     @SuppressLint("MissingPermission")
+    private fun getConnectedHidDevices(): List<BluetoothDevice> {
+        return try {
+            hidDevice?.connectedDevices ?: emptyList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
     private fun getDeviceName(device: BluetoothDevice?): String {
         return try {
-            device?.name ?: device?.address ?: "PC / Laptop"
+            device?.name ?: device?.address ?: "PC / Mac"
         } catch (_: Exception) {
-            "PC / Laptop"
+            "PC / Mac"
         }
     }
 
     /**
-     * Sends Gamepad Report (Report ID 2) for DirectInput / XInput:
-     * - Left Stick X & Y axes (0 to 255, center 127)
+     * Sends Gamepad Report (Report ID 2) for DirectInput / XInput / macOS GameController:
+     * - Left Stick X & Y axes (0 to 255, center 128)
      * - POV Hat Switch (0 to 8)
      * - Buttons 1 to 16
-     * Recognized by Windows Game Controllers and EA Sports Cricket 07 as Controller 1 / Gamepad!
+     * Recognized by Windows DirectInput and macOS as Controller 1 / Gamepad!
      */
     @SuppressLint("MissingPermission")
     private fun sendGamepadReport(leftStickX: Byte, leftStickY: Byte, hatSwitch: Byte, buttonsMask: Short) {
@@ -555,14 +734,6 @@ class MainActivity : AppCompatActivity() {
         val hid = hidDevice ?: return
 
         try {
-            // Exactly matches HidDescriptor.COMPOSITE_DESCRIPTOR Gamepad Collection:
-            // Byte 0: X-Axis (Left stick: 0-255, neutral 128)
-            // Byte 1: Y-Axis (Left stick: 0-255, neutral 128)
-            // Byte 2: Z-Axis (Right stick / Century Stick Horizontal: mirrors leftStickX)
-            // Byte 3: Rz-Axis (Right stick / Century Stick Vertical: mirrors leftStickY)
-            // Byte 4: Hat Switch (lower 4 bits: 0-7 directions, 8 = released/centered)
-            // Byte 5: Buttons 1-8 bitmask
-            // Byte 6: Buttons 9-16 bitmask
             val report = ByteArray(7)
             report[0] = leftStickX
             report[1] = leftStickY

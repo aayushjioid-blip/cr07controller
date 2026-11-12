@@ -22,26 +22,26 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build Debug and Release APK
+      - name: Run Tests and Build APK
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          gradle assembleDebug assembleRelease --stacktrace
+          gradle test assembleDebug assembleRelease --stacktrace
           
           mkdir -p dist
-          find app/build/outputs/apk/release/ -name "*.apk" -exec cp {} dist/Cricket07Controller-v2.3.0-release.apk \;
-          find app/build/outputs/apk/debug/ -name "*.apk" -exec cp {} dist/Cricket07Controller-v2.3.0-debug.apk \;
+          find app/build/outputs/apk/release/ -name "*.apk" -exec cp {} dist/Cricket07Controller-v2.5.0-release.apk \;
+          find app/build/outputs/apk/debug/ -name "*.apk" -exec cp {} dist/Cricket07Controller-v2.5.0-debug.apk \;
           ls -la dist/
 
       - name: Upload Versioned Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Cricket07Controller-v2.3.0-Release-APK
-          path: dist/Cricket07Controller-v2.3.0-release.apk
+          name: Cricket07Controller-v2.5.0-Release-APK
+          path: dist/Cricket07Controller-v2.5.0-release.apk
 
       - name: Upload Versioned Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Cricket07Controller-v2.3.0-Debug-APK
-          path: dist/Cricket07Controller-v2.3.0-debug.apk
+          name: Cricket07Controller-v2.5.0-Debug-APK
+          path: dist/Cricket07Controller-v2.5.0-debug.apk

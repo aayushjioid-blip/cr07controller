@@ -11,8 +11,8 @@ android {
         applicationId = "com.controller.cricket07"
         minSdk = 28
         targetSdk = 34
-        versionCode = 5
-        versionName = "2.3.0"
+        versionCode = 8
+        versionName = "2.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -47,4 +47,6 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+
+    testImplementation("junit:junit:4.13.2")
 }
