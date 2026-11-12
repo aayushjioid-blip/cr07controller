@@ -82,6 +82,60 @@ class MainActivity : AppCompatActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var isRegistered = false
+    private var connectingWatchdog: Runnable? = null
+
+    private fun startConnectingWatchdog(targetDevice: BluetoothDevice) {
+        cancelConnectingWatchdog()
+        connectingWatchdog = Runnable {
+            if (connectedHostDevice == null && hidDevice?.getConnectionState(targetDevice) != BluetoothProfile.STATE_CONNECTED) {
+                val devName = getDeviceName(targetDevice)
+                Log.w(TAG, "Connection to $devName timed out after 4 seconds. Resetting connecting state.")
+                try {
+                    hidDevice?.disconnect(targetDevice)
+                } catch (_: Exception) {}
+                val hostLabel = if (isMacHost) "Mac" else "Windows"
+                updateStatus("Ready! Click 'Connect' in $hostLabel Bluetooth Settings", false)
+                Toast.makeText(
+                    this@MainActivity,
+                    "To connect: Click 'Connect' on your $hostLabel Bluetooth settings",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+        mainHandler.postDelayed(connectingWatchdog!!, 4000)
+    }
+
+    private fun cancelConnectingWatchdog() {
+        connectingWatchdog?.let {
+            mainHandler.removeCallbacks(it)
+            connectingWatchdog = null
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun checkAndBindConnectedHost(): Boolean {
+        val hid = hidDevice ?: return false
+
+        // 1. Check getConnectedDevices()
+        val connected = getConnectedHidDevices()
+        if (connected.isNotEmpty()) {
+            handleHostConnected(connected.first())
+            return true
+        }
+
+        // 2. Check all bonded devices for STATE_CONNECTED on HID profile
+        val bonded = getBondedDevices()
+        for (dev in bonded) {
+            try {
+                if (hid.getConnectionState(dev) == BluetoothProfile.STATE_CONNECTED) {
+                    handleHostConnected(dev)
+                    return true
+                }
+            } catch (_: Exception) {}
+        }
+
+        return false
+    }
 
     private val serviceListener = object : BluetoothProfile.ServiceListener {
         override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
@@ -130,44 +184,30 @@ class MainActivity : AppCompatActivity() {
                         return@runOnUiThread
                     }
 
-                    // Priority 2: Check getConnectedDevices()
-                    val currentlyConnected = getConnectedHidDevices()
-                    if (currentlyConnected.isNotEmpty()) {
-                        handleHostConnected(currentlyConnected.first())
+                    // Priority 2: Check getConnectedDevices() and bonded devices in STATE_CONNECTED
+                    if (checkAndBindConnectedHost()) {
                         return@runOnUiThread
                     }
 
-                    // Priority 3: Reconnect to last successfully connected host if bonded
-                    val settingsPrefs = getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
-                    val lastMac = settingsPrefs.getString(KEY_LAST_CONNECTED_DEVICE_MAC, null)
+                    // Priority 3: Ready to connect!
+                    // In Bluetooth HID architecture, Hosts (Windows PC & Mac) initiate connections to peripherals.
+                    // DO NOT call hid.connect() automatically on startup, as unsolicited outgoing connections
+                    // cause desktop hosts to reject or hang in STATE_CONNECTING.
+                    val hostLabel = if (isMacHost) "Mac" else "Windows"
                     val bonded = getBondedDevices()
-
-                    if (lastMac != null) {
-                        val lastDevice = bonded.find { it.address.equals(lastMac, ignoreCase = true) }
-                        if (lastDevice != null) {
-                            val hostName = getDeviceName(lastDevice)
-                            updateStatus("Reconnecting to $hostName...", false)
-                            connectToDevice(lastDevice)
-                            return@runOnUiThread
-                        }
-                    }
-
-                    // Priority 4: Look for bonded Computers / Laptops / Macs
                     val computers = bonded.filter { dev ->
                         dev.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.COMPUTER
                     }
-                    if (computers.size == 1) {
-                        val target = computers.first()
-                        val targetName = getDeviceName(target)
-                        updateStatus("Connecting to $targetName...", false)
-                        connectToDevice(target)
-                        return@runOnUiThread
+                    if (computers.isNotEmpty()) {
+                        val hostNames = computers.map { getDeviceName(it) }.joinToString(", ")
+                        updateStatus("Ready! Click 'Connect' on your $hostLabel ($hostNames)", false)
+                    } else if (bonded.isNotEmpty()) {
+                        val allNames = bonded.map { getDeviceName(it) }.joinToString(", ")
+                        updateStatus("Ready! Click 'Connect' on your $hostLabel ($allNames)", false)
+                    } else {
+                        updateStatus("READY TO PAIR! Connect in $hostLabel Bluetooth Settings", false)
+                        requestDiscoverable()
                     }
-
-                    // Priority 5: Ready to connect or pair
-                    val hostLabel = if (isMacHost) "Mac" else "Windows"
-                    updateStatus("READY TO PAIR! Connect in $hostLabel Bluetooth Settings", true)
-                    requestDiscoverable()
                 } else {
                     updateStatus("HID Registration Pending. Tap to retry", false)
                 }
@@ -181,21 +221,28 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 when (state) {
                     BluetoothProfile.STATE_CONNECTED -> {
+                        cancelConnectingWatchdog()
                         if (device != null) {
                             handleHostConnected(device)
                         }
                     }
                     BluetoothProfile.STATE_CONNECTING -> {
                         updateStatus("Connecting to $devName...", false)
+                        if (device != null) {
+                            startConnectingWatchdog(device)
+                        }
                     }
                     BluetoothProfile.STATE_DISCONNECTING -> {
+                        cancelConnectingWatchdog()
                         updateStatus("Disconnecting from $devName...", false)
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
+                        cancelConnectingWatchdog()
                         if (connectedHostDevice?.address == device?.address) {
                             connectedHostDevice = null
-                            updateStatus("Disconnected. Tap to reconnect to $devName", false)
                         }
+                        val hostLabel = if (isMacHost) "Mac" else "Windows"
+                        updateStatus("Disconnected. Connect in $hostLabel Bluetooth Settings", false)
                     }
                 }
             }
@@ -374,14 +421,14 @@ class MainActivity : AppCompatActivity() {
             if (!isRegistered) {
                 registerHidApp()
             } else {
-                val connected = getConnectedHidDevices()
-                if (connected.isNotEmpty()) {
-                    handleHostConnected(connected.first())
-                } else if (connectedHostDevice != null) {
-                    val state = hidDevice?.getConnectionState(connectedHostDevice)
-                    if (state != BluetoothProfile.STATE_CONNECTED) {
-                        connectedHostDevice = null
-                        updateStatus("Ready to connect. Tap to connect to PC / Mac", false)
+                if (!checkAndBindConnectedHost()) {
+                    if (connectedHostDevice != null) {
+                        val state = hidDevice?.getConnectionState(connectedHostDevice)
+                        if (state != BluetoothProfile.STATE_CONNECTED) {
+                            connectedHostDevice = null
+                            val hostLabel = if (isMacHost) "Mac" else "Windows"
+                            updateStatus("Ready to connect. Connect in $hostLabel Bluetooth Settings", false)
+                        }
                     }
                 }
             }
@@ -459,6 +506,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleHostProfile() {
+        cancelConnectingWatchdog()
         isMacHost = !isMacHost
         val settingsPrefs = getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
         settingsPrefs.edit().putBoolean(KEY_IS_MAC_HOST, isMacHost).apply()
@@ -469,6 +517,7 @@ class MainActivity : AppCompatActivity() {
 
         val hid = hidDevice ?: return
         try {
+            connectedHostDevice = null
             if (isRegistered) {
                 isPendingReRegistration = true
                 hid.unregisterApp()
@@ -633,6 +682,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateStatus("Connecting to $devName...", false)
+        startConnectingWatchdog(device)
+
         try {
             val success = hid.connect(device)
             Log.d(TAG, "hid.connect($devName) returned $success")
@@ -641,6 +692,7 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error connecting to $devName", e)
+            cancelConnectingWatchdog()
             updateStatus("Connection error: ${e.message}", false)
         }
     }
@@ -655,7 +707,9 @@ class MainActivity : AppCompatActivity() {
         val deviceTargets = mutableListOf<BluetoothDevice>()
 
         for (dev in bonded) {
-            val isDevConnected = connectedMacs.contains(dev.address) || connectedHostDevice?.address == dev.address
+            val isDevConnected = connectedMacs.contains(dev.address) ||
+                    (hidDevice?.getConnectionState(dev) == BluetoothProfile.STATE_CONNECTED) ||
+                    (connectedHostDevice?.address == dev.address)
             val isComputer = dev.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.COMPUTER
             val icon = if (isComputer) "💻" else "📱"
             val statusTag = if (isDevConnected) " [● CONNECTED]" else ""
@@ -672,13 +726,19 @@ class MainActivity : AppCompatActivity() {
             when {
                 which < deviceTargets.size -> {
                     val selectedDevice = deviceTargets[which]
-                    connectToDevice(selectedDevice)
+                    if (hidDevice?.getConnectionState(selectedDevice) == BluetoothProfile.STATE_CONNECTED) {
+                        handleHostConnected(selectedDevice)
+                        Toast.makeText(this, "Connected to ${getDeviceName(selectedDevice)}", Toast.LENGTH_SHORT).show()
+                    } else {
+                        connectToDevice(selectedDevice)
+                    }
                 }
                 which == deviceTargets.size -> {
                     requestDiscoverable()
                 }
                 which == deviceTargets.size + 1 -> {
                     try {
+                        cancelConnectingWatchdog()
                         hidDevice?.unregisterApp()
                         isRegistered = false
                         connectedHostDevice = null
@@ -794,6 +854,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        cancelConnectingWatchdog()
         try {
             hidDevice?.unregisterApp()
             if (hidDevice != null && bluetoothAdapter != null) {
